@@ -185,4 +185,14 @@ ssh ${SSH_OPTS} ec2-user@"${EAST_PUB_IP}" "
         ' >/dev/null 2>&1 || true
     done
 "
+EAST_NODES_HOSTS=$(ssh ${SSH_OPTS} ec2-user@"${EAST_PUB_IP}" "/opt/slurm/bin/scontrol show nodes -o | grep -v 'State=IDLE+CLOUD+POWERED_DOWN' | awk '{for(i=1;i<=NF;i++){if(\$i~/^NodeName=/)n=substr(\$i,10); if(\$i~/^NodeAddr=/)a=substr(\$i,10)}} a!~\"^gpu-\"{print a, n}'" || true)
+if [ -n "${EAST_NODES_HOSTS}" ]; then
+    ssh ${SSH_OPTS} ec2-user@"${WEST_PUB_IP}" "
+        while read -r ip host; do
+            [ -z \"\${ip}\" ] && continue
+            sudo sed -i \"/\${host}/d\" /etc/hosts
+            echo \"\${ip} \${host}\" | sudo tee -a /etc/hosts >/dev/null
+        done <<< '${EAST_NODES_HOSTS}'
+    "
+fi
 ssh ${SSH_OPTS} ec2-user@"${WEST_PUB_IP}" "/opt/slurm/bin/scontrol show fed && /opt/slurm/bin/sinfo --federation"

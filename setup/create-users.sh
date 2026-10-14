@@ -5,8 +5,20 @@ echo "=== Creating SC26 Workshop Users (user1..user100) with Deterministic UIDs 
 echo "Security Mode: Generates cryptographically random per-user passwords by default"
 echo "  (or uses WORKSHOP_PASSWORD_PREFIX if explicitly set at runtime, never stored in Git)."
 
-mkdir -p /shared/etc
+mkdir -p /shared/etc /shared/users
+chmod 755 /shared/users
+ln -sfn /shared /share
 CREDENTIALS_CSV="/root/workshop-credentials.csv"
+
+cat <<'EOF' > /etc/profile.d/sc26-scratch.sh
+# Automatically set per-user isolated $SCRATCH space on shared EFS
+if [ -n "${USER:-}" ] && [ -d "/share/users/${USER}" ]; then
+    export SCRATCH="/share/users/${USER}"
+elif [ -n "${USER:-}" ] && [ -d "/shared/users/${USER}" ]; then
+    export SCRATCH="/shared/users/${USER}"
+fi
+EOF
+chmod 644 /etc/profile.d/sc26-scratch.sh
 
 # Preserve existing /shared/etc/users.list if already generated (e.g. synced from primary HeadNode)
 if [ -s /shared/etc/users.list ] && [ "$(wc -l < /shared/etc/users.list)" -ge 100 ]; then
@@ -49,12 +61,24 @@ while IFS=: read -r username uid password; do
     chmod 700 "/home/${username}/.ssh"
     chown -R "${uid}:${uid}" "/home/${username}/.ssh"
 
+    # Dedicated per-user $SCRATCH directory on shared EFS (chmod 700: accessible ONLY by matching user)
+    mkdir -p "/shared/users/${username}"
+    chown "${uid}:${uid}" "/shared/users/${username}"
+    chmod 700 "/shared/users/${username}"
+
+    if [ -f "/home/${username}/.bashrc" ] && ! grep -q 'export SCRATCH=' "/home/${username}/.bashrc"; then
+        echo 'export SCRATCH="/share/users/${USER}"' >> "/home/${username}/.bashrc"
+        chown "${uid}:${uid}" "/home/${username}/.bashrc"
+    fi
+
     cat > "/home/${username}/README.txt" <<EOF
 Welcome to the SC26 AWS HPC Workshop!
 
 Username: ${username}
+Dedicated Scratch Space (\$SCRATCH): /share/users/${username}
 
 You can:
+- Use your private large-file scratch folder: cd \$SCRATCH (/share/users/${username})
 - Submit Slurm jobs: sbatch example-job.sh
 - Submit GPU PyTorch validation jobs: sbatch run_pytorch_test.sh
 - Check job status across the federation: squeue
@@ -67,4 +91,5 @@ done < /shared/etc/users.list
 
 echo "All 100 workshop users created!"
 echo "  - Cluster sync file: /shared/etc/users.list (chmod 600)"
+echo "  - Per-user Scratch: /share/users/user1..user100 (chmod 700)"
 echo "  - Admin credential sheet: ${CREDENTIALS_CSV} (chmod 600)"

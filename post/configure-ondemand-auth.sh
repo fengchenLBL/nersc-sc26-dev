@@ -68,7 +68,7 @@ echo "Regenerating Apache configuration via ood-portal-generator..."
 mkdir -p /etc/systemd/system/httpd.service.d
 cat <<'EOF' > /etc/systemd/system/httpd.service.d/ood-workshop.conf
 [Service]
-Environment="OOD_DASHBOARD_TITLE=SC26 Workshop (AWS ParallelCluster)"
+Environment="OOD_DASHBOARD_TITLE=SC26 Workshop (NERSC-AWS)"
 Environment="RAILS_RELATIVE_URL_ROOT=/pun/sys/dashboard"
 EOF
 
@@ -76,12 +76,29 @@ DASHBOARD_ENV="/etc/ood/config/apps/dashboard/env"
 mkdir -p "$(dirname "${DASHBOARD_ENV}")"
 cat <<'EOF' > "${DASHBOARD_ENV}"
 DISABLE_CSRF=1
-OOD_BRAND_BG_COLOR="#003262"
-OOD_BRAND_LINK_ACTIVE_BG_COLOR="#FDB515"
+OOD_DASHBOARD_TITLE="SC26 Workshop (NERSC-AWS)"
+EOF
+
+mkdir -p /etc/ood/config/ondemand.d
+cat <<'EOF' > /etc/ood/config/ondemand.d/ondemand.yml
+---
+dashboard_title: "SC26 Workshop (NERSC-AWS)"
+EOF
+
+mkdir -p /etc/ood/config/apps/dashboard/initializers
+cat <<'EOF' > /etc/ood/config/apps/dashboard/initializers/ood.rb
+Rails.application.config.after_initialize do
+  OodFilesApp.candidate_favorite_paths.tap do |paths|
+    scratch_dir = "/share/users/#{User.new.name}"
+    paths << FavoritePath.new(scratch_dir, title: "Scratch") if Dir.exist?(scratch_dir)
+  end
+end
 EOF
 
 systemctl daemon-reload
 systemctl restart httpd </dev/null >/dev/null 2>&1
+/opt/ood/nginx_stage/sbin/nginx_stage nginx_clean --force >/dev/null 2>&1 || true
+pkill -f "Passenger RubyApp" >/dev/null 2>&1 || true
 
 USER1_PASS=$(awk -F: '$1=="user1"{print $3}' /shared/etc/users.list)
 echo "=== Open OnDemand Authentication Ready! ==="

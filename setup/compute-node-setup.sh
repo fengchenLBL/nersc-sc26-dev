@@ -3,12 +3,23 @@ set -euo pipefail
 
 echo "=== Running SC26 Compute Node Setup (OnNodeConfigured / Prolog) ==="
 
-# 1. Symlink /deploy -> /opt/slurm/deploy (or /shared/deploy) so /deploy/jupyter/venv paths work identically on compute nodes
+# 1. Symlink /deploy -> /opt/slurm/deploy (or /shared/deploy) and /share -> /shared so paths work identically on compute nodes
 if [ -d /opt/slurm/deploy ] && [ ! -e /deploy ]; then
     ln -sfn /opt/slurm/deploy /deploy
 elif [ -d /shared/deploy ] && [ ! -e /deploy ]; then
     ln -sfn /shared/deploy /deploy
 fi
+ln -sfn /shared /share
+
+cat <<'EOF' > /etc/profile.d/sc26-scratch.sh
+# Automatically set per-user isolated $SCRATCH space on shared EFS
+if [ -n "${USER:-}" ] && [ -d "/share/users/${USER}" ]; then
+    export SCRATCH="/share/users/${USER}"
+elif [ -n "${USER:-}" ] && [ -d "/shared/users/${USER}" ]; then
+    export SCRATCH="/shared/users/${USER}"
+fi
+EOF
+chmod 644 /etc/profile.d/sc26-scratch.sh
 
 # 2. Ensure Slurm binaries are in /usr/local/bin
 if [ -d /opt/slurm/bin ]; then

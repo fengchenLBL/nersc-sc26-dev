@@ -59,6 +59,12 @@ chown -R "${NEXT_UID}:${NEXT_UID}" "${USER_HOME}"
 chmod 700 "${USER_HOME}" "${USER_HOME}/.ssh"
 chmod 600 "${USER_HOME}/.ssh/id_rsa" "${USER_HOME}/.ssh/authorized_keys" "${USER_HOME}/.ssh/config"
 
+# Create isolated per-user $SCRATCH directory on shared EFS (chmod 700)
+mkdir -p "/shared/users/${USERNAME}"
+chmod 755 /shared/users
+chown "${NEXT_UID}:${NEXT_UID}" "/shared/users/${USERNAME}"
+chmod 700 "/shared/users/${USERNAME}"
+
 # Add to Open OnDemand Apache htpasswd
 echo "${PASSWORD}" | htpasswd -i -B "${HTPASSWD_FILE}" "${USERNAME}"
 echo "Added ${USERNAME} to Open OnDemand (${HTPASSWD_FILE})"

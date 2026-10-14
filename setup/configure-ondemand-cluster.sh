@@ -41,11 +41,11 @@ chmod 644 /etc/ood/config/clusters.d/sc26-workshop.yml
 mkdir -p /etc/ood/config/apps/shell
 cat <<'EOF' > /etc/ood/config/apps/shell/env
 OOD_DEFAULT_SSHHOST="localhost"
-OOD_SSHHOST_ALLOWLIST="localhost:127.0.0.1:ip-*:gpu-*:t4dws-*:p4d-*:cpu-*"
+OOD_SSHHOST_ALLOWLIST="localhost:127.0.0.1:10.2.*:172.31.*:ip-*:gpu-*:t4dws-*:p4d-*:cpu-*"
 EOF
 chmod 644 /etc/ood/config/apps/shell/env
 
-# 3. Configure Jupyter Interactive App (including manifest.yml so OOD shows it in Interactive Apps dropdown!)
+# 3. Configure Jupyter Interactive App (including manifest.yml and view.html.erb)
 JUPYTER_APP_DIR="/var/www/ood/apps/sys/jupyter"
 mkdir -p "${JUPYTER_APP_DIR}/template"
 
@@ -59,6 +59,16 @@ description: |
   This app will launch a Jupyter Lab or Jupyter Notebook server with PyTorch + CUDA on a Slurm GPU node across us-west-2a, us-west-2c, or us-east-2a.
 EOF
 chmod 644 "${JUPYTER_APP_DIR}/manifest.yml"
+
+cat <<'EOF' > "${JUPYTER_APP_DIR}/view.html.erb"
+<form action="/node/<%= host %>/<%= port %>/login" method="post" target="_blank">
+  <input type="hidden" name="password" value="<%= password %>">
+  <button class="btn btn-primary" type="submit">
+    <i class="fa fa-eye"></i> Connect to Jupyter
+  </button>
+</form>
+EOF
+chmod 644 "${JUPYTER_APP_DIR}/view.html.erb"
 
 cat <<EOF > "${JUPYTER_APP_DIR}/form.yml"
 ---
@@ -146,6 +156,12 @@ cat <<'EOF' > "${JUPYTER_APP_DIR}/template/before.sh.erb"
 # Export the module function if it exists
 [[ $(type -t module) == "function" ]] && export -f module
 
+# Ensure cross-region federated nodes (e.g. us-east-2 10.2.x.x) are reachable by IP from the primary OOD proxy
+NODE_IP="$(hostname -I | awk '{print $1}')"
+if [[ "${NODE_IP}" == 10.2.* ]]; then
+    host="${NODE_IP}"
+fi
+
 # Find available port to run server on
 port=$(find_port)
 
@@ -190,6 +206,7 @@ echo "TIMING - Starting main script at: $(date)"
 %>
 
 cd "<%= working_dir.to_s %>"
+export SCRATCH="/share/users/${USER}"
 
 echo "TIMING - Starting jupyter at: $(date)"
 

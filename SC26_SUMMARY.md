@@ -107,14 +107,14 @@ Filesystem      Type   Size  Used Avail Use% Mounted on
 
 | Mount Path | Underlying AWS Storage Technology | Capacity & Sizing | How It Is Shared Across Nodes | Why We Use It for This Specific Role |
 | :--- | :--- | :--- | :--- | :--- |
-| **`/shared`** | **Amazon EFS (Elastic File System)** | **Serverless & Elastic (`0 GB` to `8.0 Exabytes`)** — No fixed size to pre-allocate! Grows and shrinks automatically as files are added or deleted (\$0.30/GB-month for actual data stored). | Mounted natively via AWS EFS Mount Helper (`nfs4` over `127.0.0.1` TLS proxy) across all AZs (`us-west-2a`, `us-west-2c`). | Ideal for shared cluster config (`/shared/etc/users.list`), deployment scripts (`/shared/deploy/nersc-sc26`), and large read-mostly workshop datasets (`10 GB – 10 TB`) without ever worrying about running out of disk space. |
+| **`/shared` & `/share`** *(with per-user `$SCRATCH` at `/share/users/<user>`)* | **Amazon EFS (Elastic File System)** | **Serverless & Elastic (`0 GB` to `8.0 Exabytes`)** — No fixed size to pre-allocate! Grows and shrinks automatically as files are added or deleted (\$0.30/GB-month for actual data stored). | Mounted natively via AWS EFS Mount Helper (`nfs4` over `127.0.0.1` TLS proxy) across all AZs (`us-west-2a`, `us-west-2c`), with `/share -> /shared` symlinked on all HeadNodes and ComputeNodes. | Hosts shared cluster config (`/shared/etc/users.list`), deployment scripts (`/shared/deploy`), shared datasets, and **isolated per-user `$SCRATCH` directories (`/share/users/user1..user100`, `chmod 700`, `drwx------`)** so each user can only access their own large-file scratch folder. |
 | **`/opt/slurm/deploy`** *(symlinked at `/deploy`)* | **HeadNode Local GP3 NVMe EBS Volume** | **Part of the `120 GB` GP3 Root Volume** (`6.0 GB` used by PyTorch + CUDA + JupyterLab; `3,000 baseline IOPS`, `125 MB/s` throughput). | AWS ParallelCluster automatically NFS-exports `/opt/slurm` to all local compute nodes; each region (`sc26-west` and `sc26-east`) has its own local NVMe copy. | **15x faster Python/PyTorch installs & imports**: A newly created, empty EFS filesystem in `bursting` throughput mode throttles metadata IOPS when extracting 100,000+ small `pip` files (~20 min). Putting `/deploy/jupyter/venv` on GP3 NVMe cuts `pip install torch jupyterlab` down to **~60 seconds** and gives compute nodes local-region NVMe read speed! |
-| **`/home`** *(and `/federated_home`)* | **Primary HeadNode (`sc26-west`) GP3 NVMe EBS Volume** | **`78 GB` available** in Test (`120 GB` root volume); **recommended `500 GB` (`gp3`)** in [`config/sc26-workshop-prod.yaml`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26/config/sc26-workshop-prod.yaml) for 100 workshop users (~5 GB/user). | Exported via Kernel NFSv4.1 from `sc26-west` (`<WEST_PRIVATE_IP>:/home`) to **both** `us-west-2` (`172.31.0.0/16`) and `us-east-2` (`10.2.0.0/16` over VPC Peering at `/federated_home`). | Gives all 100 users a **single unified `/home/user<N>` directory across both Oregon and Ohio**! When a job runs on a GPU in `us-east-2a`, its output file (`pytorch_use2a_*.out`) appears immediately in `/home/user<N>/` on `sc26-west`. |
+| **`/home`** *(and `/federated_home`)* | **Primary HeadNode (`sc26-west`) GP3 NVMe EBS Volume** | **`78 GB` available** in Test (`120 GB` root volume); **recommended `500 GB` (`gp3`)** in [`config/sc26-workshop-prod.yaml`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/config/sc26-workshop-prod.yaml) for 100 workshop users (~5 GB/user). | Exported via Kernel NFSv4.1 from `sc26-west` (`<WEST_PRIVATE_IP>:/home`) to **both** `us-west-2` (`172.31.0.0/16`) and `us-east-2` (`10.2.0.0/16` over VPC Peering at `/federated_home`). | Gives all 100 users a **single unified `/home/user<N>` directory across both Oregon and Ohio**! When a job runs on a GPU in `us-east-2a`, its output file (`pytorch_use2a_*.out`) appears immediately in `/home/user<N>/` on `sc26-west`. |
 
 > [!TIP]
 > **How to Scale Storage for the Nov 15 Production Workshop**:
-> 1. **To give 100 users more `/home` space**: Increase `HeadNode -> LocalStorage -> RootVolume -> Size` in [`config/sc26-workshop-prod.yaml`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26/config/sc26-workshop-prod.yaml) from `120` to `500` (500 GB GP3 costs only ~\$40/month = **\$1.33/day**).
-> 2. **To store large training datasets (e.g., 200 GB – 2 TB) in `/shared` (Amazon EFS)**: No size change is needed because EFS is automatically elastic up to 8 Exabytes! If 100 GPU jobs will read heavy datasets from `/shared` simultaneously, add `ThroughputMode: elastic` under `SharedStorage -> EfsSettings` in the YAML so EFS scales read throughput up to **3 GiB/s** automatically.
+> 1. **To give 100 users more `/home` space**: Increase `HeadNode -> LocalStorage -> RootVolume -> Size` in [`config/sc26-workshop-prod.yaml`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/config/sc26-workshop-prod.yaml) from `120` to `500` (500 GB GP3 costs only ~\$40/month = **\$1.33/day**).
+> 2. **To store large per-user files in `$SCRATCH` (`/share/users/<username>`) or shared datasets in `/share`**: No size change is needed because Amazon EFS is automatically elastic up to 8 Exabytes! Each user's `/share/users/<username>` directory is enforced with `chmod 700` (`drwx------`) so `user1` cannot read or list `/share/users/user2`. If 100 GPU jobs will read heavy datasets from `/share` simultaneously, add `ThroughputMode: elastic` under `SharedStorage -> EfsSettings` in the YAML so EFS scales read throughput up to **3 GiB/s** automatically.
 
 ---
 
@@ -132,19 +132,19 @@ sequenceDiagram
     participant EastGPU as GPU Compute Node<br/>(us-east-2a)
 
     User->>WestHN: Login via Browser (http://WEST_HEADNODE_PUBLIC_IP/) or SSH (userN@WEST_HEADNODE_PUBLIC_IP)
-    WestHN->>User: Authenticates userN & mounts /home/userN
+    WestHN->>User: Authenticates userN & sets $HOME (/home/userN) + $SCRATCH (/share/users/userN)
 
     note over User,EastGPU: Case 1: Job Scheduled in us-west-2a or us-west-2c (sc26-west)
     User->>WestHN: Submits job (sbatch -p gpu / gpu-usw2a / gpu-usw2c or OOD JupyterLab)
-    WestHN->>WestGPU: AWS ParallelCluster ResumeProgram boots EC2 GPU instance in us-west-2a/2c
-    WestGPU->>WestGPU: Slurm Prolog syncs UID/GID, symlinks /deploy -> /opt/slurm/deploy
-    WestGPU->>WestHN: Reads input & writes job output directly to /home/userN/
+    WestHN->>WestGPU: Runs immediately on warm Static T4 GPU (~1s) or boots Dynamic T4 GPU
+    WestGPU->>WestGPU: Slurm Prolog syncs UID/GID, symlinks /deploy & /share -> /shared
+    WestGPU->>WestHN: Reads input & writes job output directly to /home/userN/ or $SCRATCH
 
     note over User,EastGPU: Case 2: Job Scheduled in us-east-2a (sc26-east via Slurm Federation)
     User->>WestHN: Submits job from sc26-west (sbatch -p gpu or sbatch -M sc26-east -p gpu-use2a)
     WestHN->>EastHN: Routes federated job over VPC Peering to sibling slurmctld (sc26-east)
-    EastHN->>EastGPU: AWS ParallelCluster ResumeProgram boots EC2 GPU instance in us-east-2a
-    EastGPU->>WestHN: Slurm Prolog mounts WEST_PRIVATE_IP:/home at /federated_home (/home/userN symlink)
+    EastHN->>EastGPU: Runs immediately on warm Static T4 GPU in us-east-2a (~1s) or boots Dynamic T4 GPU
+    EastGPU->>WestHN: Mounts WEST_PRIVATE_IP:/home at /federated_home (/home/userN symlink)
     EastGPU->>EastGPU: Loads PyTorch CUDA from local Ohio NVMe (/opt/slurm/deploy/jupyter/venv)
     EastGPU->>WestHN: Writes output file directly back to /home/userN/ on sc26-west!
 ```
@@ -155,12 +155,9 @@ sequenceDiagram
    - AWS ParallelCluster stores a master copy of the Munge key at `/opt/parallelcluster/shared/.munge/.munge.key` and copies it to `/etc/munge/munge.key` on every compute node at boot (`aws-parallelcluster-slurm/libraries/helpers.rb`).
    - [`scripts/setup-slurm-federation.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/scripts/setup-slurm-federation.sh) copies `sc26-west`'s `/etc/munge/munge.key` to **both** `/etc/munge/munge.key` and `/opt/parallelcluster/shared/.munge/.munge.key` on `sc26-east` (as well as any running compute nodes), ensuring that both HeadNodes and all static/dynamic GPU nodes in `us-west-2a`, `us-west-2c`, and `us-east-2a` trust each other's Slurm credentials.
 
-2. **Cross-Region `/federated_home` Without Breaking Local OS Accounts**:
-   - Linux NFS servers cannot re-export a directory (`/home`) that is itself an NFS client mount (`exportfs: /home does not support NFS export`), and `sc26-east` requires its own local `/home/ec2-user` and `/home/slurm`.
-   - Solution:
-     - `sc26-west` exports `/home` to both `172.31.0.0/16` (`us-west-2`) and `10.2.0.0/16` (`us-east-2`).
-     - `sc26-east` HeadNode and `sc26-east` compute nodes (via [`setup/compute-node-setup.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/setup/compute-node-setup.sh)) mount `<WEST_PRIVATE_IP>:/home` at `/federated_home`.
-     - On `sc26-east`, `/home/user1` .. `/home/user100` are symbolic links to `/federated_home/user1` .. `/federated_home/user100`.
+2. **Cross-Region `/federated_home` & Isolated Per-User `$SCRATCH` (`/share/users/<username>`)**:
+   - `sc26-west` exports `/home` to both `172.31.0.0/16` (`us-west-2`) and `10.2.0.0/16` (`us-east-2`), mounted at `/federated_home` on `sc26-east` so `/home/user1..user100` are unified across regions.
+   - [`setup/create-users.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/setup/create-users.sh) and [`setup/compute-node-setup.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/setup/compute-node-setup.sh) symlink `/share -> /shared`, export `SCRATCH=/share/users/$USER` via `/etc/profile.d/sc26-scratch.sh`, and create `/shared/users/user1..user100` with **`chmod 700` (`drwx------`)** owned by `userN:userN` so each user can only access their own scratch directory.
 
 3. **Slurm Federation + AWS ParallelCluster `clustermgtd` Compatibility**:
    - AWS ParallelCluster's `clustermgtd` daemon runs `/opt/slurm/bin/sinfo` every 60 seconds to inspect local nodes.
@@ -168,11 +165,12 @@ sequenceDiagram
    - By omitting `FederationParameters=fed_display` from `slurm.conf` and instead installing `/etc/profile.d/sc26-federation.sh` (`alias sinfo="sinfo --federation"`, `alias squeue="squeue --federation"`), `clustermgtd` manages EC2 instances cleanly in both regions while interactive users automatically see the full federated cluster view.
 
 4. **Static + Dynamic Compute Node User & Package Synchronization**:
-   - [`setup/compute-node-setup.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/setup/compute-node-setup.sh) is registered as a Slurm Prolog (`/opt/slurm/etc/scripts/prolog.d/90_sc26_compute_setup.sh`) and invoked during [`scripts/setup-slurm-federation.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/scripts/setup-slurm-federation.sh) so every static (`idle`) and dynamically booted (`idle~`) GPU node automatically gets `/deploy` symlinked, `/federated_home` mounted, `user1..user100` UIDs/GIDs (`2001..2100`) created, and `nmap-ncat` + `python3.11` installed.
+   - [`setup/compute-node-setup.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/setup/compute-node-setup.sh) is registered as a Slurm Prolog (`/opt/slurm/etc/scripts/prolog.d/90_sc26_compute_setup.sh`) and invoked during [`scripts/setup-slurm-federation.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/scripts/setup-slurm-federation.sh) so every static (`idle`) and dynamically booted (`idle~`) GPU node automatically gets `/deploy` and `/share` symlinked, `/federated_home` mounted, `user1..user100` UIDs/GIDs (`2001..2100`) created, and `nmap-ncat` + `python3.11` installed.
 
-5. **Open OnDemand 4.1 Interactive App Discovery & Federated GPU Count Patch**:
-   - [`setup/configure-ondemand-cluster.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/setup/configure-ondemand-cluster.sh) generates `/var/www/ood/apps/sys/jupyter/manifest.yml` (`role: batch_connect`, `category: Interactive Apps`) so **Interactive Apps $\rightarrow$ Jupyter Lab** appears in the Open OnDemand navbar.
-   - It also patches `ood_core`'s `slurm.rb` (`get_cluster_info`) to pass `--federation` and widen `nodehost` to `nodehost:40` (up from OOD's default 20-char column width, which truncated 22-char ParallelCluster hostnames like `gpu-usw2a-dy-t4usw2a-1` and `gpu-usw2c-dy-t4usw2c-1` to the same 20-char prefix). As a result, the OOD **Cluster Status** widget accurately reports all **10 GPUs** across `us-west-2a`, `us-west-2c`, and `us-east-2a`.
+5. **Open OnDemand 4.1 `"SC26 Workshop (NERSC-AWS)"` Portal, Connect to Jupyter Button & Federated GPU Count Patch**:
+   - [`setup/configure-ondemand-cluster.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/setup/configure-ondemand-cluster.sh) generates `/var/www/ood/apps/sys/jupyter/manifest.yml`, `form.yml.erb`, and `view.html.erb` (providing the blue **Connect to Jupyter** button that posts `password` to `/node/<host>/<port>/login` across both `us-west-2` and `us-east-2` GPU nodes).
+   - [`post/configure-ondemand-auth.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/post/configure-ondemand-auth.sh) configures the **`SC26 Workshop (NERSC-AWS)`** top navbar header and registers `/share/users/<user>` (`Scratch`) in the **Files ▾** dropdown menu.
+   - `ood_core`'s `slurm.rb` (`get_cluster_info`) is patched to pass `--federation` and widen `nodehost` to `nodehost:40` so the OOD **Cluster Status** widget accurately reports all **10 GPUs** across `us-west-2a`, `us-west-2c`, and `us-east-2a`.
 
 6. **One-Command Static & Dynamic GPU Fleet Resizing (`scripts/update-gpu-scaling.sh`)**:
    - [`scripts/update-gpu-scaling.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/scripts/update-gpu-scaling.sh) allows updating the number of static (`MinCount`) and dynamic (`MaxCount - MinCount`) GPUs across both regions with a single command (`bash scripts/update-gpu-scaling.sh <STATIC_PER_ZONE> <DYNAMIC_PER_ZONE> <DYNAMIC_POOL_PER_REGION>`), defaulting to `1 1 2` (**3 Static + 7 Dynamic = 10 T4 GPUs**).
@@ -192,10 +190,10 @@ sequenceDiagram
 2. Log in with assigned workshop credentials:
    - **Username**: `<WORKSHOP_USERNAME>` (e.g., `user<N>`)
    - **Password**: `<WORKSHOP_PASSWORD>`
-3. Use the top navigation bar:
-   - **Interactive Apps $\rightarrow$ Jupyter Lab**: Launches a GPU-backed JupyterLab notebook on a Slurm GPU compute node with the pre-built `SC26 Workshop (PyTorch + GPU)` kernel.
+3. Use the **`SC26 Workshop (NERSC-AWS)`** top navigation bar:
+   - **Interactive Apps $\rightarrow$ Jupyter Lab**: Launches a GPU-backed JupyterLab notebook on a Slurm GPU compute node (`SC26 Workshop (PyTorch + GPU)` kernel) with one-click **Connect to Jupyter**.
    - **Clusters $\rightarrow$ SC26 Workshop Cluster Shell Access**: Opens an in-browser terminal on `sc26-west`.
-   - **Files $\rightarrow$ Home Directory**: Browse, edit, upload, and download files in `/home/user<N>`.
+   - **Files $\rightarrow$ Home Directory / Scratch (`/share/users/user<N>`)**: Browse, edit, upload, and download files in `/home/user<N>` or isolated per-user `$SCRATCH` space (`/share/users/user<N>`).
    - **Jobs $\rightarrow$ Active Jobs**: Monitor running and queued jobs across the federation.
 
 ### Method 2: Command-Line SSH & Slurm Federation Commands
@@ -245,10 +243,11 @@ All requirements for the multi-region, multi-AZ GPU cluster were verified live o
 | **Beefy HeadNode Sizing** | Deployed `sc26-west` HeadNode on **`m6i.4xlarge`** (16 vCPUs, 64 GiB RAM, 120 GB GP3 NVMe SSD). | Provisioned 100 users (`user1..user100`), Open OnDemand 4.1.4, and PyTorch CUDA venv in **~4 minutes**. | **PASSED** |
 | **Slurm Federation (`sc26-fed`)** | Linked `sc26-west` and `sc26-east` via central `slurmdbd` (`6819`) and unified `munge.key`. | `scontrol show fed` reports `FedState:ACTIVE`, `PersistConnSend/Recv:Yes/Yes`, `Synced:Yes`. | **PASSED** |
 | **Cross-Region `/home` NFS** | Mounted `<WEST_PRIVATE_IP>:/home` at `/federated_home` on `sc26-east` HeadNode and compute nodes. | `user1..user100` see identical files in `/home/user<N>` across `us-west-2a`, `us-west-2c`, and `us-east-2a`. | **PASSED** |
+| **Isolated Per-User `$SCRATCH`** | Created `/share/users/user1..user100` (`chmod 700`, `drwx------`) on EFS and exported `SCRATCH=/share/users/$USER`. | `user1` can read/write `/share/users/user1`; `ls /share/users/user2` fails with `Permission denied`. | **PASSED** |
 | **3 Static + 7 Dynamic T4 GPUs** | Configured `MinCount: 1, MaxCount: 2` on `gpu-usw2a`, `gpu-usw2c`, `gpu-use2a` and `MinCount: 0, MaxCount: 2` on `gpu` (`sc26-west` & `sc26-east`). | `sinfo --federation` shows **3 `idle` static T4 nodes** (`gpu-usw2a-st-t4usw2a-1`, `gpu-usw2c-st-t4usw2c-1`, `gpu-use2a-st-t4use2a-1`) + **7 `idle~` dynamic T4 nodes**. | **PASSED** |
 | **Instant (`~1s`) Multi-Zone GPU Run** | Executed `srun -p gpu-usw2a`, `srun -p gpu-usw2c`, and `srun -M sc26-east -p gpu-use2a` with `--gpus=1 nvidia-smi -L`. | All 3 zones allocated immediately (`~1s`, zero cold-start delay) on the 3 static **Tesla T4** GPU nodes. | **PASSED** |
 | **Dynamic GPU Autoscaling** | Submitted `sbatch ~/run_pytorch_test.sh` across `gpu-usw2a`, `gpu-usw2c`, `gpu-use2a`, and `gpu`. | Dynamically booted `g4dn.xlarge`, verified **PyTorch 2.14.1+cu130** CUDA matrix multiply, and wrote output to `/home/user<N>/`. | **PASSED** |
-| **Open OnDemand 4.1.4 Portal** | Verified OOD dashboard Cluster Status widget and Interactive Apps menu. | Navbar displays **Interactive Apps $\rightarrow$ Jupyter Lab**; Cluster Status accurately reports **`0 / 10 GPUs Used`**. | **PASSED** |
+| **Open OnDemand 4.1.4 Portal & Jupyter** | Verified `SC26 Workshop (NERSC-AWS)` header, `Files -> Scratch`, Cluster Status widget (`10 GPUs`), and **Connect to Jupyter** button (`view.html.erb`). | One-click **Connect to Jupyter** logs directly into GPU JupyterLab (`/node/<host>/<port>/login` -> `200 OK`); Web Shell SSH works to all nodes. | **PASSED** |
 
 ---
 
