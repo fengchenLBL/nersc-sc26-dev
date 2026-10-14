@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-KEY_FILE="${SSH_KEY_FILE:-${HOME}/.ssh/sc26-key.pem}"
+KEY_FILE="${HOME}/.ssh/sc26-key.pem"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${KEY_FILE}"
-
-if [ "$#" -lt 4 ]; then
-    echo "Usage: $0 <WEST_PUBLIC_IP> <WEST_PRIVATE_IP> <EAST_PUBLIC_IP> <EAST_PRIVATE_IP>"
-    exit 1
-fi
 
 WEST_PUB_IP=$1
 WEST_PRIV_IP=$2
@@ -28,11 +23,10 @@ for sg in ${EAST_SGS}; do
 done
 echo "Security Groups updated in us-west-2 and us-east-2!"
 
-echo "=== 2. Synchronizing Munge Key & User Credentials (sc26-west -> sc26-east) ==="
+echo "=== 2. Synchronizing Munge Key (sc26-west -> sc26-east) ==="
 ssh ${SSH_OPTS} ec2-user@"${WEST_PUB_IP}" "sudo cat /etc/munge/munge.key" > /tmp/sc26_munge.key
-ssh ${SSH_OPTS} ec2-user@"${WEST_PUB_IP}" "sudo cat /shared/etc/users.list" > /tmp/sc26_users.list
-scp ${SSH_OPTS} /tmp/sc26_munge.key /tmp/sc26_users.list ec2-user@"${EAST_PUB_IP}":/tmp/
-rm -f /tmp/sc26_munge.key /tmp/sc26_users.list
+scp ${SSH_OPTS} /tmp/sc26_munge.key ec2-user@"${EAST_PUB_IP}":/tmp/sc26_munge.key
+rm -f /tmp/sc26_munge.key
 
 ssh ${SSH_OPTS} ec2-user@"${EAST_PUB_IP}" "sudo bash -c '
     cp /tmp/sc26_munge.key /etc/munge/munge.key
@@ -41,13 +35,10 @@ ssh ${SSH_OPTS} ec2-user@"${EAST_PUB_IP}" "sudo bash -c '
     cp /tmp/sc26_munge.key /opt/parallelcluster/shared/.munge/.munge.key
     chown root:root /opt/parallelcluster/shared/.munge/.munge.key
     chmod 0600 /opt/parallelcluster/shared/.munge/.munge.key
-    mkdir -p /shared/etc
-    cp /tmp/sc26_users.list /shared/etc/users.list
-    chmod 0600 /shared/etc/users.list
-    rm -f /tmp/sc26_munge.key /tmp/sc26_users.list
+    rm -f /tmp/sc26_munge.key
     systemctl restart munge
 '"
-echo "Munge key and /shared/etc/users.list unified across sc26-west and sc26-east!"
+echo "Munge key unified across sc26-west and sc26-east!"
 
 echo "=== 3. Configuring Cross-Region /etc/hosts & Unified /home/user1..user100 ==="
 WEST_HOSTNAME=$(ssh ${SSH_OPTS} ec2-user@"${WEST_PUB_IP}" "hostname -s")
@@ -80,15 +71,13 @@ ssh ${SSH_OPTS} ec2-user@"${EAST_PUB_IP}" "sudo bash -c '
 echo "Cross-region /federated_home mounted and linked on sc26-east!"
 
 echo "=== 4. Configuring MariaDB & slurmdbd on sc26-west (${WEST_PRIV_IP}:6819) ==="
-DB_PASS=$(openssl rand -hex 12)
 ssh ${SSH_OPTS} ec2-user@"${WEST_PUB_IP}" "sudo bash -c '
     systemctl enable mariadb </dev/null >/dev/null 2>&1
     systemctl start mariadb </dev/null >/dev/null 2>&1
 
     mysql -u root <<SQL
 CREATE DATABASE IF NOT EXISTS slurm_acct_db;
-CREATE USER IF NOT EXISTS \"slurm\"@\"localhost\" IDENTIFIED BY \"${DB_PASS}\";
-ALTER USER \"slurm\"@\"localhost\" IDENTIFIED BY \"${DB_PASS}\";
+CREATE USER IF NOT EXISTS \"slurm\"@\"localhost\" IDENTIFIED BY \"sc26slurm\";
 GRANT ALL ON slurm_acct_db.* TO \"slurm\"@\"localhost\";
 FLUSH PRIVILEGES;
 SQL
@@ -103,7 +92,7 @@ LogFile=/var/log/slurmdbd.log
 PidFile=/var/run/slurmdbd.pid
 StorageType=accounting_storage/mysql
 StorageHost=localhost
-StoragePass=${DB_PASS}
+StoragePass=sc26slurm
 StorageUser=slurm
 StorageLoc=slurm_acct_db
 EOF
@@ -170,5 +159,30 @@ ssh ${SSH_OPTS} ec2-user@"${WEST_PUB_IP}" "sudo bash -c '
 ssh ${SSH_OPTS} ec2-user@"${EAST_PUB_IP}" "sudo systemctl restart slurmctld"
 sleep 3
 
-echo "=== 6. Verifying Slurm Federation Status ==="
+echo "=== 6. Syncing Running Static/Dynamic Compute Nodes & Verifying Slurm Federation Status ==="
+ssh ${SSH_OPTS} ec2-user@"${WEST_PUB_IP}" "
+    sudo mkdir -p /shared/setup && sudo cp ~/nersc-sc26/setup/compute-node-setup.sh /shared/setup/compute-node-setup.sh 2>/dev/null || true
+    for addr in \$(/opt/slurm/bin/scontrol show nodes -o | grep -v 'State=IDLE+CLOUD+POWERED_DOWN' | sed -n 's/.*NodeAddr=\\([^ ]*\\).*/\\1/p' | grep -v '^gpu-'); do
+        ssh -o StrictHostKeyChecking=no \${addr} 'sudo bash /shared/setup/compute-node-setup.sh' >/dev/null 2>&1 || true
+    done
+"
+ssh ${SSH_OPTS} ec2-user@"${EAST_PUB_IP}" "
+    sudo mkdir -p /shared/setup && sudo cp ~/nersc-sc26/setup/compute-node-setup.sh /shared/setup/compute-node-setup.sh 2>/dev/null || true
+    for addr in \$(/opt/slurm/bin/scontrol show nodes -o | grep -v 'State=IDLE+CLOUD+POWERED_DOWN' | sed -n 's/.*NodeAddr=\\([^ ]*\\).*/\\1/p' | grep -v '^gpu-'); do
+        ssh -o StrictHostKeyChecking=no \${addr} '
+            sudo cp /opt/parallelcluster/shared/.munge/.munge.key /etc/munge/munge.key
+            sudo chown munge:munge /etc/munge/munge.key
+            sudo chmod 0400 /etc/munge/munge.key
+            sudo systemctl restart munge slurmd
+            sudo mkdir -p /federated_home
+            sudo mount -t nfs4 ${WEST_PRIV_IP}:/home /federated_home 2>/dev/null || true
+            sudo bash /shared/setup/compute-node-setup.sh
+            for u in \$(seq 1 100); do
+                if [ ! -L /home/user\${u} ]; then
+                    sudo rm -rf /home/user\${u} && sudo ln -s /federated_home/user\${u} /home/user\${u}
+                fi
+            done
+        ' >/dev/null 2>&1 || true
+    done
+"
 ssh ${SSH_OPTS} ec2-user@"${WEST_PUB_IP}" "/opt/slurm/bin/scontrol show fed && /opt/slurm/bin/sinfo --federation"

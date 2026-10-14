@@ -6,11 +6,11 @@ This project migrates and extends the [SC25 GCP Slurm Workshop (`SC25_SUMMARY.md
 
 Unlike a single-zone cluster, the SC26 workshop GPU reservations span **multiple AWS Regions and Availability Zones (`us-west-2a`, `us-west-2c`, and `us-east-2a`)**. To give 100+ workshop participants a **single login node, a single unified `/home` directory, and transparent multi-region GPU scheduling**, this architecture combines:
 
-- **AWS ParallelCluster v3.15.0 (RHEL 8 + Slurm 25.11.8)**: Two coordinated GPU-only clusters (`sc26-west` in Oregon `us-west-2` and `sc26-east` in Ohio `us-east-2`) with elastic dynamic autoscaling (`MinCount: 0`).
+- **AWS ParallelCluster v3.15.0 (RHEL 8 + Slurm 25.11.8)**: Two coordinated GPU-only clusters (`sc26-west` in Oregon `us-west-2` and `sc26-east` in Ohio `us-east-2`) configured with **3 Static (Always-Running) T4 GPU nodes** (1 per zone for instant `~1s` job startup) + **7 Dynamic (Autoscaling) T4 GPU nodes** (**10 T4 GPUs total**, adjustable anytime via [`scripts/update-gpu-scaling.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/scripts/update-gpu-scaling.sh)).
 - **Slurm Federation (`sc26-fed`) + Shared `slurmdbd`**: Links `sc26-west` and `sc26-east` into a single federated Slurm scheduler domain with unified Munge authentication (`munge.key`), federated queue visibility (`sinfo --federation`, `squeue --federation`), and federated job accounting (`sacct --federation`).
 - **Inter-Region VPC Peering + Unified Cross-Region `/home` NFS**: Connects `us-west-2` (`172.31.0.0/16`) and `us-east-2` (`10.2.0.0/16`) over AWS backbone peering so that jobs running in **any** region (`us-west-2a`, `us-west-2c`, or `us-east-2a`) read and write directly to the participant's `/home/user<N>` directory on `sc26-west`.
 - **Beefy Primary HeadNode (`m6i.4xlarge` — 16 vCPUs, 64 GiB RAM, 120 GB GP3 NVMe SSD)**: Sized to comfortably host **100+ concurrent workshop users** (`user1..user100`) across SSH and Open OnDemand Per-User NGINX (PUN) processes.
-- **Open OnDemand (OOD) v4.0.11**: Zero-install browser portal offering one-click GPU JupyterLab (Batch Connect), Web Shell Terminal, Visual File Manager, and Job Composer.
+- **Open OnDemand (OOD) v4.1.4**: Zero-install browser portal offering one-click GPU **Jupyter Lab** (Batch Connect), Web Shell Terminal, Visual File Manager, Job Composer, and a federation-aware **Cluster Status** dashboard showing all **10 GPUs** across Oregon and Ohio.
 - **Hybrid Storage Architecture (Amazon EFS `8.0 Exabyte` Elastic NFS + GP3 NVMe SSD)**: Combines serverless, infinitely elastic **Amazon EFS (`/shared`)** for shared cluster scripts/datasets with high-IOPS **GP3 NVMe EBS (`/opt/slurm/deploy` & `/home`)** for fast Python/PyTorch environment loading and low-latency user home directories.
 
 > [!IMPORTANT]
@@ -29,16 +29,16 @@ flowchart TD
 
     subgraph USWest2 ["AWS Region: us-west-2 (Oregon) — VPC: 172.31.0.0/16 (sc26-west)"]
         subgraph WestHead ["Primary Login, Federation & Storage Hub (us-west-2a)"]
-            HeadNodeWest["sc26-west HeadNode (m6i.4xlarge: 16 vCPU, 64 GiB RAM)<br/>Public IP: WEST_HEADNODE_PUBLIC_IP | Private IP: WEST_PRIVATE_IP<br/>• Open OnDemand v4.0.11 + Apache + 100x Per-User NGINX<br/>• Primary slurmctld + Central slurmdbd (Port 6819) + MariaDB<br/>• 120 GB GP3 NVMe SSD: /home NFS Export & /opt/slurm/deploy/jupyter/venv (6.0 GB)"]
+            HeadNodeWest["sc26-west HeadNode (m6i.4xlarge: 16 vCPU, 64 GiB RAM)<br/>Public IP: WEST_HEADNODE_PUBLIC_IP | Private IP: WEST_PRIVATE_IP<br/>• Open OnDemand v4.1.4 + Apache + 100x Per-User NGINX<br/>• Primary slurmctld + Central slurmdbd (Port 6819) + MariaDB<br/>• 120 GB GP3 NVMe SSD: /home NFS Export & /opt/slurm/deploy/jupyter/venv (6.0 GB)"]
         end
 
         subgraph WestEFS ["Amazon EFS (us-west-2)"]
             EFSWest["Amazon EFS (/shared)<br/>Elastic Capacity (8.0 Exabytes virtual, pay-per-GB)<br/>• Mounted across us-west-2a & us-west-2c<br/>• Shared scripts (/shared/deploy) & user registry (/shared/etc)"]
         end
 
-        subgraph WestCompute ["us-west-2 Multi-AZ Dynamic GPU Pools (GPU-Only)"]
-            WestAZ_A["Availability Zone: us-west-2a<br/>Queues: gpu-usw2a & gpu*<br/>• Dynamic GPU Nodes (g4dn.xlarge T4 / p4d.24xlarge A100)<br/>• Scales 0 -> N on demand"]
-            WestAZ_C["Availability Zone: us-west-2c<br/>Queues: gpu-usw2c & gpu*<br/>• Dynamic GPU Nodes (g4dn.xlarge T4 / p4d.24xlarge A100)<br/>• Scales 0 -> N on demand"]
+        subgraph WestCompute ["us-west-2 Multi-AZ GPU Pools (2 Static + 4 Dynamic = 6 T4 GPUs)"]
+            WestAZ_A["Availability Zone: us-west-2a<br/>Queues: gpu-usw2a (1 Static + 1 Dynamic) & gpu* (2 Dynamic)<br/>• g4dn.xlarge (1x Tesla T4) / Prod: p4d.24xlarge (8x A100)"]
+            WestAZ_C["Availability Zone: us-west-2c<br/>Queues: gpu-usw2c (1 Static + 1 Dynamic) & gpu* (2 Dynamic)<br/>• g4dn.xlarge (1x Tesla T4) / Prod: p4d.24xlarge (8x A100)"]
         end
     end
 
@@ -51,8 +51,8 @@ flowchart TD
             EFSEast["Amazon EFS (/shared)<br/>Elastic Capacity (8.0 Exabytes virtual, pay-per-GB)<br/>• Mounted in us-east-2a"]
         end
 
-        subgraph EastCompute ["us-east-2 Dynamic GPU Pool (GPU-Only)"]
-            EastAZ_A["Availability Zone: us-east-2a<br/>Queues: gpu-use2a & gpu*<br/>• Dynamic GPU Nodes (g4dn.xlarge T4 / p4d.24xlarge A100)<br/>• Scales 0 -> N on demand"]
+        subgraph EastCompute ["us-east-2 GPU Pool (1 Static + 3 Dynamic = 4 T4 GPUs)"]
+            EastAZ_A["Availability Zone: us-east-2a<br/>Queues: gpu-use2a (1 Static + 1 Dynamic) & gpu* (2 Dynamic)<br/>• g4dn.xlarge (1x Tesla T4) / Prod: p4d.24xlarge (8x A100)"]
         end
     end
 
@@ -73,15 +73,16 @@ flowchart TD
     HeadNodeWest -.->|"Cross-Region NFSv4.1 /federated_home"| EastAZ_A
 ```
 
-### 2.1 Architectural Component Summary
+### 2.1 Architectural Component Summary (3 Static + 7 Dynamic = 10 T4 GPUs)
 
 | Component | AWS Cluster & Region/AZ | Sizing & Hardware | Role & Responsibilities |
 | :--- | :--- | :--- | :--- |
-| **Primary HeadNode & OOD Portal** | `sc26-west` (`us-west-2a`) | **`m6i.4xlarge`** (16 vCPUs, 64 GiB RAM, 12.5 Gbps network, 120 GB GP3 NVMe) | Single user entry point for 100+ users; runs Open OnDemand 4.0.11, primary `slurmctld`, central `slurmdbd` + MariaDB, and exports `/home` + `/opt/slurm/deploy`. |
-| **Spoke HeadNode (East Controller)** | `sc26-east` (`us-east-2a`) | **`m6i.2xlarge`** (8 vCPUs, 32 GiB RAM, 100 GB GP3 NVMe) | Runs federated sibling `slurmctld` and `clustermgtd` to autoscale EC2 GPU nodes in `us-east-2a`; hosts local `/opt/slurm/deploy/jupyter/venv`. |
-| **Oregon Zone-A GPU Pool** | `sc26-west` (`us-west-2a`) | **Test**: `g4dn.xlarge` (1x Tesla T4, 16 GB)<br/>**Prod**: `p4d.24xlarge` (8x A100 40GB + EFA) | Served by Slurm partitions `gpu-usw2a` (zone-pinned) and `gpu` (federated default). Dynamic autoscaling (`0..N`). |
-| **Oregon Zone-C GPU Pool** | `sc26-west` (`us-west-2c`) | **Test**: `g4dn.xlarge` (1x Tesla T4, 16 GB)<br/>**Prod**: `p4d.24xlarge` (8x A100 40GB + EFA) | Served by Slurm partitions `gpu-usw2c` (zone-pinned) and `gpu` (federated default). Dynamic autoscaling (`0..N`). |
-| **Ohio Zone-A GPU Pool** | `sc26-east` (`us-east-2a`) | **Test**: `g4dn.xlarge` (1x Tesla T4, 16 GB)<br/>**Prod**: `p4d.24xlarge` (8x A100 40GB + EFA) | Served by Slurm partitions `gpu-use2a` (zone-pinned) and `gpu` (federated default). Dynamic autoscaling (`0..N`). |
+| **Primary HeadNode & OOD Portal** | `sc26-west` (`us-west-2a`) | **`m6i.4xlarge`** (16 vCPUs, 64 GiB RAM, 12.5 Gbps network, 120 GB GP3 NVMe) | Single user entry point for 100+ users; runs Open OnDemand 4.1.4, primary `slurmctld`, central `slurmdbd` + MariaDB, and exports `/home` + `/opt/slurm/deploy`. |
+| **Spoke HeadNode (East Controller)** | `sc26-east` (`us-east-2a`) | **`m6i.2xlarge`** (8 vCPUs, 32 GiB RAM, 100 GB GP3 NVMe) | Runs federated sibling `slurmctld` and `clustermgtd` to manage static & dynamic EC2 GPU nodes in `us-east-2a`; hosts local `/opt/slurm/deploy/jupyter/venv`. |
+| **Oregon Zone-A GPU Queue (`gpu-usw2a`)** | `sc26-west` (`us-west-2a`) | **1 Static (`idle`) + 1 Dynamic (`idle~`)** `g4dn.xlarge` (1x Tesla T4, 16 GB)<br/>**Prod**: `p4d.24xlarge` (8x A100 40GB + EFA) | Zone-pinned queue (`MinCount: 1, MaxCount: 2`). Keeps `gpu-usw2a-st-t4usw2a-1` always warm for instant job execution plus `gpu-usw2a-dy-t4usw2a-1` on demand. |
+| **Oregon Zone-C GPU Queue (`gpu-usw2c`)** | `sc26-west` (`us-west-2c`) | **1 Static (`idle`) + 1 Dynamic (`idle~`)** `g4dn.xlarge` (1x Tesla T4, 16 GB)<br/>**Prod**: `p4d.24xlarge` (8x A100 40GB + EFA) | Zone-pinned queue (`MinCount: 1, MaxCount: 2`). Keeps `gpu-usw2c-st-t4usw2c-1` always warm for instant job execution plus `gpu-usw2c-dy-t4usw2c-1` on demand. |
+| **Ohio Zone-A GPU Queue (`gpu-use2a`)** | `sc26-east` (`us-east-2a`) | **1 Static (`idle`) + 1 Dynamic (`idle~`)** `g4dn.xlarge` (1x Tesla T4, 16 GB)<br/>**Prod**: `p4d.24xlarge` (8x A100 40GB + EFA) | Zone-pinned queue (`MinCount: 1, MaxCount: 2`). Keeps `gpu-use2a-st-t4use2a-1` always warm in Ohio plus `gpu-use2a-dy-t4use2a-1` on demand. |
+| **Federated Overflow GPU Queue (`gpu*`)** | `sc26-west` (`us-west-2a/2c`) & `sc26-east` (`us-east-2a`) | **4 Dynamic (`idle~`)** `g4dn.xlarge` (`2` in Oregon + `2` in Ohio) | Default federated overflow pool (`MinCount: 0, MaxCount: 2` per region) that scales `0 -> 4` additional T4 GPUs on demand. |
 | **Amazon EFS Shared Storage** | `us-west-2` & `us-east-2` | **Elastic (`8.0 Exabytes` virtual limit)**, General Purpose, encrypted | Serverless multi-AZ NFSv4.1 filesystem mounted at `/shared` across HeadNode and compute nodes. |
 | **Inter-Region VPC Peering** | `us-west-2` $\leftrightarrow$ `us-east-2` | `172.31.0.0/16` $\leftrightarrow$ `10.2.0.0/16` | Private AWS backbone link carrying Slurm Federation RPCs, `slurmdbd` accounting, and `/federated_home` NFSv4.1 traffic. |
 
@@ -148,29 +149,36 @@ sequenceDiagram
     EastGPU->>WestHN: Writes output file directly back to /home/userN/ on sc26-west!
 ```
 
-### B. Five Key Engineering Mechanisms
+### B. Seven Key Engineering Mechanisms
 
 1. **Unified Munge Authentication Across Regions (`munge.key`)**:
-   - AWS ParallelCluster stores a master copy of the Munge key at `/opt/parallelcluster/shared/.munge/.munge.key` and copies it to `/etc/munge/munge.key` on every dynamic compute node at boot (`aws-parallelcluster-slurm/libraries/helpers.rb`).
-   - [`scripts/setup-slurm-federation.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26/scripts/setup-slurm-federation.sh) copies `sc26-west`'s `/etc/munge/munge.key` to **both** `/etc/munge/munge.key` and `/opt/parallelcluster/shared/.munge/.munge.key` on `sc26-east`, ensuring that both HeadNodes and all dynamically scaled GPU nodes in `us-west-2a`, `us-west-2c`, and `us-east-2a` trust each other's Slurm credentials.
+   - AWS ParallelCluster stores a master copy of the Munge key at `/opt/parallelcluster/shared/.munge/.munge.key` and copies it to `/etc/munge/munge.key` on every compute node at boot (`aws-parallelcluster-slurm/libraries/helpers.rb`).
+   - [`scripts/setup-slurm-federation.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/scripts/setup-slurm-federation.sh) copies `sc26-west`'s `/etc/munge/munge.key` to **both** `/etc/munge/munge.key` and `/opt/parallelcluster/shared/.munge/.munge.key` on `sc26-east` (as well as any running compute nodes), ensuring that both HeadNodes and all static/dynamic GPU nodes in `us-west-2a`, `us-west-2c`, and `us-east-2a` trust each other's Slurm credentials.
 
 2. **Cross-Region `/federated_home` Without Breaking Local OS Accounts**:
    - Linux NFS servers cannot re-export a directory (`/home`) that is itself an NFS client mount (`exportfs: /home does not support NFS export`), and `sc26-east` requires its own local `/home/ec2-user` and `/home/slurm`.
    - Solution:
      - `sc26-west` exports `/home` to both `172.31.0.0/16` (`us-west-2`) and `10.2.0.0/16` (`us-east-2`).
-     - `sc26-east` HeadNode and `sc26-east` compute nodes (via [`setup/compute-node-setup.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26/setup/compute-node-setup.sh)) mount `<WEST_PRIVATE_IP>:/home` at `/federated_home`.
+     - `sc26-east` HeadNode and `sc26-east` compute nodes (via [`setup/compute-node-setup.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/setup/compute-node-setup.sh)) mount `<WEST_PRIVATE_IP>:/home` at `/federated_home`.
      - On `sc26-east`, `/home/user1` .. `/home/user100` are symbolic links to `/federated_home/user1` .. `/federated_home/user100`.
 
 3. **Slurm Federation + AWS ParallelCluster `clustermgtd` Compatibility**:
-   - AWS ParallelCluster's `clustermgtd` daemon runs `/opt/slurm/bin/sinfo` every 60 seconds to inspect local dynamic nodes.
+   - AWS ParallelCluster's `clustermgtd` daemon runs `/opt/slurm/bin/sinfo` every 60 seconds to inspect local nodes.
    - If `FederationParameters=fed_display` is set globally in `slurm.conf`, `sinfo` returns remote sibling nodes and causes `clustermgtd` to reject the output.
-   - By omitting `FederationParameters=fed_display` from `slurm.conf` and instead installing `/etc/profile.d/sc26-federation.sh` (`alias sinfo="sinfo --federation"`, `alias squeue="squeue --federation"`), `clustermgtd` scales EC2 instances cleanly in both regions while interactive users automatically see the full federated cluster view.
+   - By omitting `FederationParameters=fed_display` from `slurm.conf` and instead installing `/etc/profile.d/sc26-federation.sh` (`alias sinfo="sinfo --federation"`, `alias squeue="squeue --federation"`), `clustermgtd` manages EC2 instances cleanly in both regions while interactive users automatically see the full federated cluster view.
 
-4. **Dynamic Compute Node User & Package Synchronization via Slurm Prolog**:
-   - [`setup/compute-node-setup.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26/setup/compute-node-setup.sh) is registered as a Slurm Prolog (`/opt/slurm/etc/scripts/prolog.d/90_sc26_compute_setup.sh`) so every dynamically booted GPU node automatically gets `/deploy` symlinked, `/federated_home` mounted, `user1..user100` UIDs/GIDs (`2001..2100`) created, and `nmap-ncat` + `python3.11` installed before the user job starts.
+4. **Static + Dynamic Compute Node User & Package Synchronization**:
+   - [`setup/compute-node-setup.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/setup/compute-node-setup.sh) is registered as a Slurm Prolog (`/opt/slurm/etc/scripts/prolog.d/90_sc26_compute_setup.sh`) and invoked during [`scripts/setup-slurm-federation.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/scripts/setup-slurm-federation.sh) so every static (`idle`) and dynamically booted (`idle~`) GPU node automatically gets `/deploy` symlinked, `/federated_home` mounted, `user1..user100` UIDs/GIDs (`2001..2100`) created, and `nmap-ncat` + `python3.11` installed.
 
-5. **On-Demand Capacity Reservation (ODCR) Support for Nov 15 Production**:
-   - AWS ParallelCluster natively supports targeting NERSC's pre-reserved GPU blocks in `us-west-2a`, `us-west-2c`, and `us-east-2a` by adding `CapacityReservationTarget: { CapacityReservationId: cr-xxxxx }` under each queue's `ComputeResources` block in [`config/sc26-workshop-prod.yaml`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26/config/sc26-workshop-prod.yaml).
+5. **Open OnDemand 4.1 Interactive App Discovery & Federated GPU Count Patch**:
+   - [`setup/configure-ondemand-cluster.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/setup/configure-ondemand-cluster.sh) generates `/var/www/ood/apps/sys/jupyter/manifest.yml` (`role: batch_connect`, `category: Interactive Apps`) so **Interactive Apps $\rightarrow$ Jupyter Lab** appears in the Open OnDemand navbar.
+   - It also patches `ood_core`'s `slurm.rb` (`get_cluster_info`) to pass `--federation` and widen `nodehost` to `nodehost:40` (up from OOD's default 20-char column width, which truncated 22-char ParallelCluster hostnames like `gpu-usw2a-dy-t4usw2a-1` and `gpu-usw2c-dy-t4usw2c-1` to the same 20-char prefix). As a result, the OOD **Cluster Status** widget accurately reports all **10 GPUs** across `us-west-2a`, `us-west-2c`, and `us-east-2a`.
+
+6. **One-Command Static & Dynamic GPU Fleet Resizing (`scripts/update-gpu-scaling.sh`)**:
+   - [`scripts/update-gpu-scaling.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/scripts/update-gpu-scaling.sh) allows updating the number of static (`MinCount`) and dynamic (`MaxCount - MinCount`) GPUs across both regions with a single command (`bash scripts/update-gpu-scaling.sh <STATIC_PER_ZONE> <DYNAMIC_PER_ZONE> <DYNAMIC_POOL_PER_REGION>`), defaulting to `1 1 2` (**3 Static + 7 Dynamic = 10 T4 GPUs**).
+
+7. **On-Demand Capacity Reservation (ODCR) Support for Nov 15 Production**:
+   - AWS ParallelCluster natively supports targeting NERSC's pre-reserved GPU blocks in `us-west-2a`, `us-west-2c`, and `us-east-2a` by adding `CapacityReservationTarget: { CapacityReservationId: cr-xxxxx }` under each queue's `ComputeResources` block in [`config/sc26-workshop-prod.yaml`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/config/sc26-workshop-prod.yaml).
 
 ---
 
@@ -234,14 +242,13 @@ All requirements for the multi-region, multi-AZ GPU cluster were verified live o
 | Test Category | Description & Test Executed | Observed Result | Status |
 | :--- | :--- | :--- | :--- |
 | **Multi-Region VPC & Peering** | Automated creation of `us-east-2` VPC (`10.2.0.0/16`) and Inter-Region VPC Peering with `us-west-2` (`172.31.0.0/16`). | Bidirectional routing and Security Group rules established between Oregon and Ohio. | **PASSED** |
-| **Beefy HeadNode Sizing** | Deployed `sc26-west` HeadNode on **`m6i.4xlarge`** (16 vCPUs, 64 GiB RAM, 120 GB GP3 NVMe SSD). | Provisioned 100 users (`user1..user100`), Open OnDemand 4.0.11, and PyTorch CUDA venv in **~4 minutes**. | **PASSED** |
+| **Beefy HeadNode Sizing** | Deployed `sc26-west` HeadNode on **`m6i.4xlarge`** (16 vCPUs, 64 GiB RAM, 120 GB GP3 NVMe SSD). | Provisioned 100 users (`user1..user100`), Open OnDemand 4.1.4, and PyTorch CUDA venv in **~4 minutes**. | **PASSED** |
 | **Slurm Federation (`sc26-fed`)** | Linked `sc26-west` and `sc26-east` via central `slurmdbd` (`6819`) and unified `munge.key`. | `scontrol show fed` reports `FedState:ACTIVE`, `PersistConnSend/Recv:Yes/Yes`, `Synced:Yes`. | **PASSED** |
 | **Cross-Region `/home` NFS** | Mounted `<WEST_PRIVATE_IP>:/home` at `/federated_home` on `sc26-east` HeadNode and compute nodes. | `user1..user100` see identical files in `/home/user<N>` across `us-west-2a`, `us-west-2c`, and `us-east-2a`. | **PASSED** |
-| **Oregon Zone-A GPU (`us-west-2a`)** | Submitted `sbatch -p gpu-usw2a ~/run_pytorch_test.sh`. | Dynamically booted `g4dn.xlarge` in `us-west-2a`, detected **Tesla T4**, PyTorch 2.14.1+cu130 matrix multiply passed. | **PASSED** |
-| **Oregon Zone-C GPU (`us-west-2c`)** | Submitted `sbatch -p gpu-usw2c ~/run_pytorch_test.sh`. | Dynamically booted `g4dn.xlarge` in `us-west-2c`, detected **Tesla T4**, PyTorch 2.14.1+cu130 matrix multiply passed. | **PASSED** |
-| **Ohio Zone-A GPU (`us-east-2a`)** | Submitted `sbatch -M sc26-east -p gpu-use2a ~/run_pytorch_test.sh` from `sc26-west`. | Dynamically booted `g4dn.xlarge` in `us-east-2a`, detected **Tesla T4**, wrote `/home/user<N>/pytorch_use2a_*.out` back to Oregon. | **PASSED** |
-| **Federated Auto GPU Queue (`gpu*`)** | Submitted `sbatch -p gpu ~/run_pytorch_test.sh`. | Dynamically booted `g4dn.xlarge`, detected **Tesla T4**, completed with exit code `0:0`. | **PASSED** |
-| **Open OnDemand 4.0.11 Portal** | Authenticated via HTTP Basic Auth to `/pun/sys/dashboard`. | `HTTP/1.1 200 OK`; PUN spawned cleanly; JupyterLab Batch Connect app configured for `gpu` partition. | **PASSED** |
+| **3 Static + 7 Dynamic T4 GPUs** | Configured `MinCount: 1, MaxCount: 2` on `gpu-usw2a`, `gpu-usw2c`, `gpu-use2a` and `MinCount: 0, MaxCount: 2` on `gpu` (`sc26-west` & `sc26-east`). | `sinfo --federation` shows **3 `idle` static T4 nodes** (`gpu-usw2a-st-t4usw2a-1`, `gpu-usw2c-st-t4usw2c-1`, `gpu-use2a-st-t4use2a-1`) + **7 `idle~` dynamic T4 nodes**. | **PASSED** |
+| **Instant (`~1s`) Multi-Zone GPU Run** | Executed `srun -p gpu-usw2a`, `srun -p gpu-usw2c`, and `srun -M sc26-east -p gpu-use2a` with `--gpus=1 nvidia-smi -L`. | All 3 zones allocated immediately (`~1s`, zero cold-start delay) on the 3 static **Tesla T4** GPU nodes. | **PASSED** |
+| **Dynamic GPU Autoscaling** | Submitted `sbatch ~/run_pytorch_test.sh` across `gpu-usw2a`, `gpu-usw2c`, `gpu-use2a`, and `gpu`. | Dynamically booted `g4dn.xlarge`, verified **PyTorch 2.14.1+cu130** CUDA matrix multiply, and wrote output to `/home/user<N>/`. | **PASSED** |
+| **Open OnDemand 4.1.4 Portal** | Verified OOD dashboard Cluster Status widget and Interactive Apps menu. | Navbar displays **Interactive Apps $\rightarrow$ Jupyter Lab**; Cluster Status accurately reports **`0 / 10 GPUs Used`**. | **PASSED** |
 
 ---
 
@@ -249,9 +256,9 @@ All requirements for the multi-region, multi-AZ GPU cluster were verified live o
 
 *Prices are based on AWS On-Demand list pricing in `us-west-2` and `us-east-2`.*
 
-### A. Current Multi-Region Federated GPU Test Cluster (`sc26-west` + `sc26-east`)
+### A. Current Multi-Region Federated GPU Test Cluster (`sc26-west` + `sc26-east`: 3 Static + 7 Dynamic T4 GPUs)
 
-Because all GPU queues use **dynamic autoscaling (`MinCount: 0`)**, the `g4dn.xlarge` GPU nodes automatically power down after sitting idle (`scaledown_idletime = 10` minutes), dropping GPU compute cost to **\$0.00/hr** when no jobs are running.
+With **3 Static (Always-Running) T4 GPU nodes** (1 in `us-west-2a`, 1 in `us-west-2c`, 1 in `us-east-2a`) + **7 Dynamic (Autoscaling) T4 GPU nodes**, workshop users get **instant (`~1s`) GPU job startup** in every zone while the 7 overflow GPUs stay at **\$0.00/hr** until needed:
 
 | Resource | Region & AZ | Instance / Storage Type | Hourly Rate (USD) | Daily Cost (24 Hours) | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -259,8 +266,10 @@ Because all GPU queues use **dynamic autoscaling (`MinCount: 0`)**, the `g4dn.xl
 | **`sc26-east` Spoke HeadNode** | `us-east-2a` | `m6i.2xlarge` (8 vCPU, 32 GiB RAM) | ~\$0.384 / hr | ~\$9.22 / day | Federated sibling controller in Ohio |
 | **GP3 NVMe EBS Volumes (220 GB total)** | Both Regions | `120 GB` (`us-west-2`) + `100 GB` (`us-east-2`) GP3 | ~\$0.024 / hr | ~\$0.59 / day | \$0.08 / GB-month (`3,000 IOPS`, `125 MB/s`) |
 | **Amazon EFS (`/shared`, Elastic)** | Both Regions | Serverless EFS (`8.0 Exabytes` max, `<1 GB` used) | ~\$0.001 / hr | ~\$0.01 / day | \$0.30 / GB-month for actual bytes stored (vs. \$6.83/day fixed 1 TB Filestore on GCP!) |
-| **4x Dynamic `g4dn.xlarge` (T4 GPU)** | `us-west-2a`, `2c`, `us-east-2a` | `g4dn.xlarge` (1x Tesla T4 GPU each) | **\$0.00 / hr (Idle)**<br/>*\$0.526 / hr per active node* | **\$0.00 / day (Idle)**<br/>*\$2.10 / hr when all 4 run* | Automatically scales to 0 after 10 min idle |
-| **Total Federated Cluster (Idle Baseline)** | **Multi-Region** | **2 HeadNodes + Storage (0 Active GPUs)** | **~\$1.18 / hr** | **~\$28.25 / day** | **Ready 24/7; scales GPUs on demand** |
+| **3x Static `g4dn.xlarge` (Always-On T4)** | `us-west-2a`, `2c`, `us-east-2a` | `3x g4dn.xlarge` (1x Tesla T4 GPU + 64 GB EBS each) | ~\$1.60 / hr | ~\$38.30 / day | 1 warm T4 GPU per zone for instant `~1s` startup (`MinCount: 1`) |
+| **7x Dynamic `g4dn.xlarge` (Autoscaling T4)** | `us-west-2a`, `2c`, `us-east-2a` | `7x g4dn.xlarge` (1x Tesla T4 GPU each) | **\$0.00 / hr (Idle)**<br/>*\$0.526 / hr per active node* | **\$0.00 / day (Idle)**<br/>*\$3.68 / hr when all 7 run* | Automatically scales to 0 after 10 min idle |
+| **Total Cluster (With 3 Static GPUs Warm)** | **Multi-Region** | **2 HeadNodes + Storage + 3 Static T4 GPUs** | **~\$2.77 / hr** | **~\$66.55 / day** | **3 T4 GPUs warm 24/7 + 7 Dynamic T4 GPUs on demand** |
+| **Total Cluster (If Scaled to 0 Static GPUs)** | **Multi-Region** | **2 HeadNodes + Storage (0 Static, 10 Dynamic)** | **~\$1.18 / hr** | **~\$28.25 / day** | Run `bash scripts/update-gpu-scaling.sh 0 1 2` when not testing |
 
 ---
 

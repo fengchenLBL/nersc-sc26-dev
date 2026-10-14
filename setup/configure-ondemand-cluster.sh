@@ -45,9 +45,20 @@ OOD_SSHHOST_ALLOWLIST="localhost:127.0.0.1:ip-*:gpu-*:t4dws-*:p4d-*:cpu-*"
 EOF
 chmod 644 /etc/ood/config/apps/shell/env
 
-# 3. Configure Jupyter Interactive App
+# 3. Configure Jupyter Interactive App (including manifest.yml so OOD shows it in Interactive Apps dropdown!)
 JUPYTER_APP_DIR="/var/www/ood/apps/sys/jupyter"
 mkdir -p "${JUPYTER_APP_DIR}/template"
+
+cat <<'EOF' > "${JUPYTER_APP_DIR}/manifest.yml"
+---
+name: Jupyter Lab
+category: Interactive Apps
+subcategory: Servers
+role: batch_connect
+description: |
+  This app will launch a Jupyter Lab or Jupyter Notebook server with PyTorch + CUDA on a Slurm GPU node across us-west-2a, us-west-2c, or us-east-2a.
+EOF
+chmod 644 "${JUPYTER_APP_DIR}/manifest.yml"
 
 cat <<EOF > "${JUPYTER_APP_DIR}/form.yml"
 ---
@@ -57,11 +68,11 @@ attributes:
     widget: "select"
     label: "Slurm GPU Partition (Federated Queue)"
     options:
-      - [ "Auto Federated GPU (us-west-2a / us-west-2c / us-east-2a) [gpu]", "gpu" ]
-      - [ "Oregon Zone A GPU - us-west-2a (g4dn.xlarge T4) [gpu-usw2a]", "gpu-usw2a" ]
-      - [ "Oregon Zone C GPU - us-west-2c (g4dn.xlarge T4) [gpu-usw2c]", "gpu-usw2c" ]
-      - [ "Ohio Zone A GPU - us-east-2a (g4dn.xlarge T4) [gpu-use2a]", "gpu-use2a" ]
-    value: "${DEFAULT_PARTITION}"
+      - [ "Oregon Zone A GPU - us-west-2a (1 Static + 1 Dynamic T4) [gpu-usw2a]", "gpu-usw2a" ]
+      - [ "Oregon Zone C GPU - us-west-2c (1 Static + 1 Dynamic T4) [gpu-usw2c]", "gpu-usw2c" ]
+      - [ "Ohio Zone A GPU - us-east-2a (1 Static + 1 Dynamic T4) [gpu-use2a]", "gpu-use2a" ]
+      - [ "Auto Federated Dynamic GPU Pool (4 Dynamic T4 across West & East) [gpu]", "gpu" ]
+    value: "gpu-usw2a"
   bc_num_hours:
     widget: "number_field"
     label: "Number of hours"
@@ -212,4 +223,63 @@ sleep 2
 EOF
 
 chmod +x "${JUPYTER_APP_DIR}/template/before.sh.erb" "${JUPYTER_APP_DIR}/template/script.sh.erb" "${JUPYTER_APP_DIR}/template/after.sh.erb"
+
+# 4. Patch ood_core slurm.rb so get_cluster_info:
+#    - Uses nodehost:40 (prevents >20 char AWS ParallelCluster node names like gpu-usw2a-dy-t4usw2a-1 from colliding with gres column!)
+#    - Queries --federation so all federated regions/zones are counted in the OOD Cluster Status widget!
+SLURM_RB=$(find /opt/ood/ondemand/root/usr/share/gems -name "slurm.rb" 2>/dev/null | head -n 1 || true)
+if [ -n "${SLURM_RB}" ] && [ -f "${SLURM_RB}" ]; then
+    cp -n "${SLURM_RB}" "${SLURM_RB}.orig" || true
+    python3 - "${SLURM_RB}" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path, "r") as f:
+    content = f.read()
+
+target = """          def get_cluster_info
+            node_cpu_info = call("sinfo", "-aho %A/%D/%C").strip.split('/')
+            gres_length = call("sinfo", "-o %G").lines.map(&:strip).map(&:length).max + 2
+            gres_lines = call("sinfo", "-ahNO ,nodehost,gres:#{gres_length},gresused:#{gres_length}")
+                         .lines.uniq.map(&:split)
+            ClusterInfo.new(active_nodes: node_cpu_info[0].to_i,
+                            total_nodes: node_cpu_info[2].to_i,
+                            active_processors: node_cpu_info[3].to_i,
+                            total_processors: node_cpu_info[6].to_i,
+                            active_gpus: gres_lines.sum { |line| Slurm.gpus_from_gres(line[2]) },
+                            total_gpus: gres_lines.sum { |line| Slurm.gpus_from_gres(line[1]) }
+            )
+          end"""
+
+replacement = """          def get_cluster_info
+            fed_lines = call("sinfo", "--federation", "-aho", "%A/%D/%C").lines.map(&:strip).reject(&:empty?)
+            active_n = fed_lines.sum { |l| l.split('/')[0].to_i }
+            total_n  = fed_lines.sum { |l| l.split('/')[2].to_i }
+            active_c = fed_lines.sum { |l| l.split('/')[3].to_i }
+            total_c  = fed_lines.sum { |l| l.split('/')[6].to_i }
+            gres_length = call("sinfo", "--federation", "-o", "%G").lines.map(&:strip).map(&:length).max + 2
+            gres_lines = call("sinfo", "--federation", "-ahNO", ",cluster,nodehost:40,gres:#{gres_length},gresused:#{gres_length}")
+                         .lines.uniq.map(&:split)
+            ClusterInfo.new(active_nodes: active_n,
+                            total_nodes: total_n,
+                            active_processors: active_c,
+                            total_processors: total_c,
+                            active_gpus: gres_lines.sum { |line| Slurm.gpus_from_gres(line[3]) },
+                            total_gpus: gres_lines.sum { |line| Slurm.gpus_from_gres(line[2]) }
+            )
+          end"""
+
+if target in content:
+    content = content.replace(target, replacement)
+    with open(path, "w") as f:
+        f.write(content)
+    print(f"Patched {path} with nodehost:40 and --federation support!")
+else:
+    print(f"{path} already patched or target not found.")
+PYEOF
+fi
+
+# Restart active Per-User NGINX (PUN) processes so dashboard immediately reflects changes
+/opt/ood/nginx_stage/sbin/nginx_stage nginx_clean --force >/dev/null 2>&1 || true
+pkill -f "Passenger RubyApp" >/dev/null 2>&1 || true
+
 echo "=== Open OnDemand Cluster & Jupyter App Configuration Complete! ==="
