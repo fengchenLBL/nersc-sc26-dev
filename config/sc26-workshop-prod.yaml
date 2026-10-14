@@ -1,0 +1,70 @@
+# SC26 AWS ParallelCluster Blueprint - Nov 15th Production Cluster (us-west-2a & us-west-2c)
+# - HeadNode: m6i.4xlarge (16 vCPUs, 64 GiB RAM, 120 GB GP3 NVMe) for 100+ concurrent Open OnDemand & SSH users
+# - Compute Nodes (GPU-only, p4d.24xlarge = 8x NVIDIA A100 GPUs + 4x 100Gbps EFA):
+#   1. gpu-usw2a (Pinned to us-west-2a ODCR: <REPLACE_WITH_USW2A_ODCR_ID>)
+#   2. gpu-usw2c (Pinned to us-west-2c ODCR: <REPLACE_WITH_USW2C_ODCR_ID>)
+
+Region: us-west-2
+Image:
+  Os: rhel8
+
+HeadNode:
+  InstanceType: m6i.4xlarge
+  Networking:
+    SubnetId: <REPLACE_WITH_USW2A_SUBNET_ID>
+  Ssh:
+    KeyName: <REPLACE_WITH_KEYPAIR_NAME>
+  LocalStorage:
+    RootVolume:
+      Size: 120
+      VolumeType: gp3
+      Iops: 3000
+      Throughput: 250
+
+SharedStorage:
+  - MountDir: /shared
+    Name: sc26-prod-west-efs
+    StorageType: Efs
+    EfsSettings:
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+
+Scheduling:
+  Scheduler: slurm
+  SlurmSettings:
+    ScaledownIdletime: 60
+  SlurmQueues:
+    - Name: gpu-usw2a
+      CapacityType: CAPACITY_BLOCK
+      ComputeResources:
+        - Name: p4da100usw2a
+          InstanceType: p4d.24xlarge
+          MinCount: 0
+          MaxCount: 4
+          Efa:
+            Enabled: true
+            GdrSupport: true
+          CapacityReservationTarget:
+            CapacityReservationId: <REPLACE_WITH_USW2A_ODCR_ID>
+      Networking:
+        SubnetIds:
+          - <REPLACE_WITH_USW2A_SUBNET_ID>
+        PlacementGroup:
+          Enabled: true
+    - Name: gpu-usw2c
+      CapacityType: CAPACITY_BLOCK
+      ComputeResources:
+        - Name: p4da100usw2c
+          InstanceType: p4d.24xlarge
+          MinCount: 0
+          MaxCount: 4
+          Efa:
+            Enabled: true
+            GdrSupport: true
+          CapacityReservationTarget:
+            CapacityReservationId: <REPLACE_WITH_USW2C_ODCR_ID>
+      Networking:
+        SubnetIds:
+          - <REPLACE_WITH_USW2C_SUBNET_ID>
+        PlacementGroup:
+          Enabled: true

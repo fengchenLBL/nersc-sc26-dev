@@ -1,0 +1,16 @@
+# Python virtual environments
+.venv/
+venv/
+__pycache__/
+
+# Secrets, SSH keys, and generated workshop credentials (NEVER commit to Git)
+*.pem
+*.pub
+*.key
+workshop-credentials.csv
+users.list
+.env
+
+# OS & Editor files
+.DS_Store
+*.bak

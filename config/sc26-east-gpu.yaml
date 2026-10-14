@@ -1,0 +1,54 @@
+# SC26 AWS ParallelCluster Blueprint - Federated East Spoke Cluster (us-east-2a)
+# - HeadNode: m6i.2xlarge (8 vCPUs, 32 GiB RAM, 100 GB GP3 NVMe) in us-east-2a (10.2.1.0/24 peered with us-west-2)
+# - Compute Nodes (GPU-only, 0 CPU nodes):
+#   1. gpu (Default Federated Partition in us-east-2a)
+#   2. gpu-use2a (Pinned strictly to us-east-2a: <REPLACE_WITH_USE2A_SUBNET_ID>)
+
+Region: us-east-2
+Image:
+  Os: rhel8
+
+HeadNode:
+  InstanceType: m6i.2xlarge
+  Networking:
+    SubnetId: <REPLACE_WITH_USE2A_SUBNET_ID>
+  Ssh:
+    KeyName: sc26-key
+  LocalStorage:
+    RootVolume:
+      Size: 100
+      VolumeType: gp3
+      Iops: 3000
+      Throughput: 250
+
+SharedStorage:
+  - MountDir: /shared
+    Name: sc26-east-efs
+    StorageType: Efs
+    EfsSettings:
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+
+Scheduling:
+  Scheduler: slurm
+  SlurmSettings:
+    ScaledownIdletime: 15
+  SlurmQueues:
+    - Name: gpu
+      ComputeResources:
+        - Name: t4gpu
+          InstanceType: g4dn.xlarge
+          MinCount: 0
+          MaxCount: 2
+      Networking:
+        SubnetIds:
+          - <REPLACE_WITH_USE2A_SUBNET_ID>
+    - Name: gpu-use2a
+      ComputeResources:
+        - Name: t4use2a
+          InstanceType: g4dn.xlarge
+          MinCount: 0
+          MaxCount: 2
+      Networking:
+        SubnetIds:
+          - <REPLACE_WITH_USE2A_SUBNET_ID>

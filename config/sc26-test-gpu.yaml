@@ -1,0 +1,66 @@
+# SC26 AWS ParallelCluster Blueprint - Primary West Cluster (us-west-2a & us-west-2c)
+# - HeadNode: m6i.4xlarge (16 vCPUs, 64 GiB RAM, 120 GB GP3 NVMe) for 100+ concurrent Open OnDemand & SSH users
+# - Compute Nodes (GPU-only, 0 CPU nodes):
+#   1. gpu (Default Federated Partition spanning both us-west-2a & us-west-2c)
+#   2. gpu-usw2a (Pinned strictly to us-west-2a: <REPLACE_WITH_USW2A_SUBNET_ID>)
+#   3. gpu-usw2c (Pinned strictly to us-west-2c: <REPLACE_WITH_USW2C_SUBNET_ID>)
+
+Region: us-west-2
+Image:
+  Os: rhel8
+
+HeadNode:
+  InstanceType: m6i.4xlarge
+  Networking:
+    SubnetId: <REPLACE_WITH_USW2A_SUBNET_ID>
+  Ssh:
+    KeyName: sc26-key
+  LocalStorage:
+    RootVolume:
+      Size: 120
+      VolumeType: gp3
+      Iops: 3000
+      Throughput: 250
+
+SharedStorage:
+  - MountDir: /shared
+    Name: sc26-west-efs
+    StorageType: Efs
+    EfsSettings:
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+
+Scheduling:
+  Scheduler: slurm
+  SlurmSettings:
+    ScaledownIdletime: 15
+  SlurmQueues:
+    - Name: gpu
+      ComputeResources:
+        - Name: t4gpu
+          Instances:
+            - InstanceType: g4dn.xlarge
+          MinCount: 0
+          MaxCount: 2
+      Networking:
+        SubnetIds:
+          - <REPLACE_WITH_USW2A_SUBNET_ID>
+          - <REPLACE_WITH_USW2C_SUBNET_ID>
+    - Name: gpu-usw2a
+      ComputeResources:
+        - Name: t4usw2a
+          InstanceType: g4dn.xlarge
+          MinCount: 0
+          MaxCount: 2
+      Networking:
+        SubnetIds:
+          - <REPLACE_WITH_USW2A_SUBNET_ID>
+    - Name: gpu-usw2c
+      ComputeResources:
+        - Name: t4usw2c
+          InstanceType: g4dn.xlarge
+          MinCount: 0
+          MaxCount: 2
+      Networking:
+        SubnetIds:
+          - <REPLACE_WITH_USW2C_SUBNET_ID>

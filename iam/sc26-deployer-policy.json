@@ -1,0 +1,62 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SC26ParallelClusterCoreServices",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:*",
+        "efs:*",
+        "fsx:*",
+        "cloudformation:*",
+        "dynamodb:*",
+        "s3:*",
+        "logs:*",
+        "cloudwatch:*",
+        "lambda:*",
+        "events:*",
+        "SNS:*",
+        "AutoScaling:*",
+        "route53:*",
+        "resource-groups:*",
+        "tag:*",
+        "sts:GetCallerIdentity",
+        "servicequotas:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SC26ParallelClusterIAMLifecycle",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:PassRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:CreateInstanceProfile",
+        "iam:DeleteInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:TagInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:CreateServiceLinkedRole",
+        "iam:CreatePolicy",
+        "iam:DeletePolicy",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+        "iam:ListPolicyVersions"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

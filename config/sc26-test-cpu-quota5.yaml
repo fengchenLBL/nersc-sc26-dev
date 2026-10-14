@@ -1,0 +1,43 @@
+# SC26 AWS ParallelCluster Blueprint - Immediate 5-vCPU Quota Test (us-west-2)
+# Fits inside a brand-new AWS account's default 5-vCPU Standard limit:
+#   - HeadNode: t3.large (2 vCPUs, 8 GiB RAM)
+#   - Compute Queue (cpu-test): t3.medium (2 vCPUs, 4 GiB RAM, MinCount: 0, MaxCount: 1)
+#   - Total peak vCPUs = 4 vCPUs (<= 5 vCPU limit)
+
+Region: us-west-2
+Image:
+  Os: rhel8
+
+HeadNode:
+  InstanceType: t3.large
+  Networking:
+    SubnetId: <REPLACE_WITH_USW2A_SUBNET_ID>
+  Ssh:
+    KeyName: sc26-key
+  LocalStorage:
+    RootVolume:
+      Size: 60
+      VolumeType: gp3
+
+SharedStorage:
+  - MountDir: /shared
+    Name: sc26-shared-efs
+    StorageType: Efs
+    EfsSettings:
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+
+Scheduling:
+  Scheduler: slurm
+  SlurmSettings:
+    ScaledownIdletime: 10
+  SlurmQueues:
+    - Name: cpu-test
+      ComputeResources:
+        - Name: t3medium
+          InstanceType: t3.medium
+          MinCount: 0
+          MaxCount: 1
+      Networking:
+        SubnetIds:
+          - <REPLACE_WITH_USW2A_SUBNET_ID>
