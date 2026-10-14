@@ -16,7 +16,7 @@ This repository provides a reproducible, automated deployment blueprint for the 
   - `gpu-usw2c`: Pinned to **`us-west-2c`** (Oregon Zone C)
   - `gpu-use2a`: Pinned to **`us-east-2a`** (Ohio Zone A)
   - `gpu` *(Default Federated Queue)*: Spans all 3 Availability Zones across both regions (`us-west-2a`, `us-west-2c`, `us-east-2a`)
-- **Zero Static Passwords in Git**: By default, `setup/create-users.sh` generates **cryptographically random 12-character passwords** for `user1..user100` at deployment time and stores them only on the HeadNode in `/root/workshop-credentials.csv` (`chmod 600`).
+- **Zero Static Passwords in Git**: By default, `setup/create-users.sh` generates **cryptographically random 12-character passwords** for `user0..user100` at deployment time and stores them only on the HeadNode in `/root/workshop-credentials.csv` (`chmod 600`).
 
 ---
 
@@ -135,7 +135,7 @@ echo "sc26-east: Public=${EAST_PUB_IP}, Private=${EAST_PRIV_IP}"
    This script automatically:
    - Opens HTTP/HTTPS (80/443) for Open OnDemand and cross-region VPC traffic (`172.31.0.0/16` $\leftrightarrow$ `10.2.0.0/16`).
    - Synchronizes `/etc/munge/munge.key` and `/shared/etc/users.list` across both regions.
-   - Mounts `/home/user1..user100` across regions over NFSv4.1 (`/federated_home`).
+   - Mounts `/home/user0..user100` across regions over NFSv4.1 (`/federated_home`).
    - Configures `slurmdbd` + MariaDB and joins `sc26-west` and `sc26-east` into `sc26-fed`.
 
 ---
