@@ -89,7 +89,7 @@ mkdir -p /etc/ood/config/apps/dashboard/initializers
 cat <<'EOF' > /etc/ood/config/apps/dashboard/initializers/ood.rb
 Rails.application.config.after_initialize do
   OodFilesApp.candidate_favorite_paths.tap do |paths|
-    scratch_dir = "/share/users/#{User.new.name}"
+    scratch_dir = "/shared/users/#{User.new.name}"
     paths << FavoritePath.new(scratch_dir, title: "Scratch") if Dir.exist?(scratch_dir)
   end
 end

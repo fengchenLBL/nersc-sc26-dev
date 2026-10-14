@@ -206,7 +206,7 @@ echo "TIMING - Starting main script at: $(date)"
 %>
 
 cd "<%= working_dir.to_s %>"
-export SCRATCH="/share/users/${USER}"
+export SCRATCH="/shared/users/${USER}"
 
 echo "TIMING - Starting jupyter at: $(date)"
 

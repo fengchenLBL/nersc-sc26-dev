@@ -7,14 +7,11 @@ echo "  (or uses WORKSHOP_PASSWORD_PREFIX if explicitly set at runtime, never st
 
 mkdir -p /shared/etc /shared/users
 chmod 755 /shared/users
-ln -sfn /shared /share
 CREDENTIALS_CSV="/root/workshop-credentials.csv"
 
 cat <<'EOF' > /etc/profile.d/sc26-scratch.sh
-# Automatically set per-user isolated $SCRATCH space on shared EFS
-if [ -n "${USER:-}" ] && [ -d "/share/users/${USER}" ]; then
-    export SCRATCH="/share/users/${USER}"
-elif [ -n "${USER:-}" ] && [ -d "/shared/users/${USER}" ]; then
+# Automatically set per-user isolated $SCRATCH space on shared EFS (/shared/users/<user>)
+if [ -n "${USER:-}" ] && [ -d "/shared/users/${USER}" ]; then
     export SCRATCH="/shared/users/${USER}"
 fi
 EOF
@@ -66,8 +63,9 @@ while IFS=: read -r username uid password; do
     chown "${uid}:${uid}" "/shared/users/${username}"
     chmod 700 "/shared/users/${username}"
 
-    if [ -f "/home/${username}/.bashrc" ] && ! grep -q 'export SCRATCH=' "/home/${username}/.bashrc"; then
-        echo 'export SCRATCH="/share/users/${USER}"' >> "/home/${username}/.bashrc"
+    if [ -f "/home/${username}/.bashrc" ]; then
+        sed -i '/export SCRATCH=/d' "/home/${username}/.bashrc"
+        echo 'export SCRATCH="/shared/users/${USER}"' >> "/home/${username}/.bashrc"
         chown "${uid}:${uid}" "/home/${username}/.bashrc"
     fi
 
@@ -75,10 +73,10 @@ while IFS=: read -r username uid password; do
 Welcome to the SC26 AWS HPC Workshop!
 
 Username: ${username}
-Dedicated Scratch Space (\$SCRATCH): /share/users/${username}
+Dedicated Scratch Space (\$SCRATCH): /shared/users/${username}
 
 You can:
-- Use your private large-file scratch folder: cd \$SCRATCH (/share/users/${username})
+- Use your private large-file scratch folder: cd \$SCRATCH (/shared/users/${username})
 - Submit Slurm jobs: sbatch example-job.sh
 - Submit GPU PyTorch validation jobs: sbatch run_pytorch_test.sh
 - Check job status across the federation: squeue
@@ -91,5 +89,5 @@ done < /shared/etc/users.list
 
 echo "All 100 workshop users created!"
 echo "  - Cluster sync file: /shared/etc/users.list (chmod 600)"
-echo "  - Per-user Scratch: /share/users/user1..user100 (chmod 700)"
+echo "  - Per-user Scratch: /shared/users/user1..user100 (chmod 700)"
 echo "  - Admin credential sheet: ${CREDENTIALS_CSV} (chmod 600)"
