@@ -83,6 +83,9 @@ flowchart TD
 | **Oregon Zone-C GPU Queue (`gpu-usw2c`)** | `sc26-west` (`us-west-2c`) | **1 Static (`idle`) + 1 Dynamic (`idle~`)** `g4dn.xlarge` (1x Tesla T4, 16 GB)<br/>**Prod**: `p4d.24xlarge` (8x A100 40GB + EFA) | Zone-pinned queue (`MinCount: 1, MaxCount: 2`). Keeps `gpu-usw2c-st-t4usw2c-1` always warm for instant job execution plus `gpu-usw2c-dy-t4usw2c-1` on demand. |
 | **Ohio Zone-A GPU Queue (`gpu-use2a`)** | `sc26-east` (`us-east-2a`) | **1 Static (`idle`) + 1 Dynamic (`idle~`)** `g4dn.xlarge` (1x Tesla T4, 16 GB)<br/>**Prod**: `p4d.24xlarge` (8x A100 40GB + EFA) | Zone-pinned queue (`MinCount: 1, MaxCount: 2`). Keeps `gpu-use2a-st-t4use2a-1` always warm in Ohio plus `gpu-use2a-dy-t4use2a-1` on demand. |
 | **Federated Overflow GPU Queue (`gpu*`)** | `sc26-west` (`us-west-2a/2c`) & `sc26-east` (`us-east-2a`) | **4 Dynamic (`idle~`)** `g4dn.xlarge` (`2` in Oregon + `2` in Ohio) | Default federated overflow pool (`MinCount: 0, MaxCount: 2` per region) that scales `0 -> 4` additional T4 GPUs on demand. |
+| **Oregon Zone-A A100 Queue (`a100-usw2a`)** | `sc26-west` (`us-west-2a`) | **Up to 8x `p4d.24xlarge`** (`64x NVIDIA A100 40GB` + `4x 100 Gbps EFA`) | Pre-configured in `placeholder` mode (`MinCount: 0, MaxCount: 8`); switches to `2` static nodes on Oct 23 (`oct23` mode) and `8` static nodes on Nov 15 (`nov15` mode). |
+| **Oregon Zone-C A100 Queue (`a100-usw2c`)** | `sc26-west` (`us-west-2c`) | **Up to 7x `p4d.24xlarge`** (`56x NVIDIA A100 40GB` + `4x 100 Gbps EFA`) | Pre-configured in `placeholder` mode (`MinCount: 0, MaxCount: 7`); switches to `7` static nodes on Nov 15 (`nov15` mode). |
+| **Ohio Zone-A A100 Queue (`a100-use2a`)** | `sc26-east` (`us-east-2a`) | **Up to 7x `p4d.24xlarge`** (`56x NVIDIA A100 40GB` + `4x 100 Gbps EFA`) | Pre-configured in `placeholder` mode (`MinCount: 0, MaxCount: 7`); switches to `2` static nodes on Oct 23 (`oct23` mode) and `7` static nodes on Nov 15 (`nov15` mode). |
 | **Amazon EFS Shared Storage** | `us-west-2` & `us-east-2` | **Elastic (`8.0 Exabytes` virtual limit)**, General Purpose, encrypted | Serverless multi-AZ NFSv4.1 filesystem mounted at `/shared` across HeadNode and compute nodes. |
 | **Inter-Region VPC Peering** | `us-west-2` $\leftrightarrow$ `us-east-2` | `172.31.0.0/16` $\leftrightarrow$ `10.2.0.0/16` | Private AWS backbone link carrying Slurm Federation RPCs, `slurmdbd` accounting, and `/federated_home` NFSv4.1 traffic. |
 
@@ -281,4 +284,64 @@ With **3 Static (Always-Running) T4 GPU nodes** (1 in `us-west-2a`, 1 in `us-wes
 | **Login & OOD Node Sizing** | Separate Login + Controller (`2x n1-standard-4`, 4 vCPU / 15 GB each) | **Beefy Primary HeadNode (`m6i.4xlarge`, 16 vCPU / 64 GiB RAM)** + Spoke HeadNode (`m6i.2xlarge`) |
 | **Shared Storage (`/shared`, `/home`, `/deploy`)** | Fixed 1 TB Google Cloud Filestore (~\$6.83/day fixed minimum cost) | **Elastic Amazon EFS (`/shared`, 8.0 EB max, ~\$0.01/day when idle) + HeadNode GP3 NVMe NFS (`/home` & `/deploy`, ~\$0.59/day)** |
 | **Compute Node Provisioning** | Custom pre-baked image or startup script | Stock ParallelCluster AMI + **Slurm Prolog (`90_sc26_compute_setup.sh`)** + `OnNodeConfigured` |
-| **Reserved GPU Attachment** | GCP DWS / Reservation | **AWS On-Demand Capacity Reservation (`CapacityReservationId: cr-xxxxx`)** |
+| **Reserved GPU Attachment** | GCP DWS / Reservation | **AWS EC2 Capacity Blocks (`CapacityReservationTarget` + `InstanceReservation: CAPACITY_BLOCK`)** |
+
+---
+
+## 7. Multi-Region A100 (`p4d.24xlarge`) Capacity Block Reservations, Timezone Guide & Cutover Runbook
+
+Both [`config/sc26-test-gpu.yaml`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/config/sc26-test-gpu.yaml) and [`config/sc26-east-gpu.yaml`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/config/sc26-east-gpu.yaml) include the 3 `p4d.24xlarge` (NVIDIA A100 80/40GB) partitions (**`a100-usw2a`**, **`a100-usw2c`**, and **`a100-use2a`**) right alongside the 4 `g4dn.xlarge` (Tesla T4) partitions (**`gpu`**, **`gpu-usw2a`**, **`gpu-usw2c`**, and **`gpu-use2a`**).
+
+By default, the 3 `a100-*` partitions are deployed in **`placeholder` mode (`MinCount: 0`)** without `CapacityReservationTarget` so that:
+1. Anyone can deploy and test the full 7-partition federated Slurm + Open OnDemand setup in any AWS account (even an account without Capacity Block reservations), and
+2. No Capacity Reservation IDs (`cr-...`) are exposed in the public repository.
+
+### 7.1 Reservation Windows & Chicago Local Time Conversion
+
+> [!IMPORTANT]
+> **Daylight Saving Time (DST) Ends on November 1, 2026**:
+> - On **October 23, 2026**, US Daylight Saving Time is still active (`UTC-07:00 PDT` / `UTC-05:00 CDT`).
+> - On **November 15, 2026**, US Standard Time is active (`UTC-08:00 PST` / `UTC-06:00 CST`).
+> - In both windows, **Chicago local time (SC26 conference timezone) is 2 hours ahead of Pacific time**:
+
+| Event / Mode | Slurm Partitions Activated | Instance Count & Total A100 GPUs | Start Time (Pacific / Chicago / UTC) | End Time (Pacific / Chicago / UTC) |
+| :--- | :--- | :--- | :--- | :--- |
+| **`placeholder` Mode** *(Default / Everyday Testing)* | `a100-usw2a` (`0..8`), `a100-usw2c` (`0..7`), `a100-use2a` (`0..7`) at `MinCount: 0` | `0` active A100s (`3 Static + 7 Dynamic T4 GPUs` active) | Anytime | Anytime |
+| **`oct23` Mode** *(Oct 23 Dress Rehearsal — 2 AZs)* | • `a100-usw2a` (`us-west-2a`): `2 × p4d.24xlarge`<br/>• `a100-use2a` (`us-east-2a`): `2 × p4d.24xlarge`<br/>• `a100-usw2c` (`us-west-2c`): `0` *(placeholder)* | **`4 × p4d.24xlarge` = 32 × NVIDIA A100 GPUs** | **Oct 23, 2026 04:30 AM PDT**<br/>= **06:30 AM CDT (Chicago)**<br/>= `11:30 UTC` | **Oct 24, 2026 04:30 AM PDT**<br/>= **06:30 AM CDT (Chicago)**<br/>= `11:30 UTC` |
+| **`nov15` Mode** *(Nov 15 SC26 Workshop — 3 AZs)* | • `a100-usw2a` (`us-west-2a`): `8 × p4d.24xlarge`<br/>• `a100-usw2c` (`us-west-2c`): `7 × p4d.24xlarge`<br/>• `a100-use2a` (`us-east-2a`): `7 × p4d.24xlarge` | **`22 × p4d.24xlarge` = 176 × NVIDIA A100 GPUs** | **Nov 15, 2026 03:30 AM PST**<br/>= **05:30 AM CST (Chicago)**<br/>= `11:30 UTC` | **Nov 16, 2026 03:30 AM PST**<br/>= **05:30 AM CST (Chicago)**<br/>= `11:30 UTC` |
+
+---
+
+### 7.2 One-Command Cutover Script (`scripts/configure-a100-partitions.sh`)
+
+Use [`scripts/configure-a100-partitions.sh`](file:///Users/fengchenliu/makabaka/SC25-NERSC/nersc-sc26-public/scripts/configure-a100-partitions.sh) to switch the running clusters between `placeholder`, `oct23`, and `nov15` modes without touching the running T4 GPUs:
+
+#### A. Oct 23, 2026 Dress Rehearsal Cutover (After 04:30 AM PDT / 06:30 AM CDT Chicago)
+```bash
+# 1. Verify your two Oct 23 Capacity Blocks are in State="active"
+aws ec2 describe-capacity-reservations --region us-west-2 --capacity-reservation-ids <USW2A_OCT23_CB_ID>
+aws ec2 describe-capacity-reservations --region us-east-2 --capacity-reservation-ids <USE2A_OCT23_CB_ID>
+
+# 2. Configure oct23 mode (2x p4d in us-west-2a + 2x p4d in us-east-2a) and update both clusters
+bash scripts/configure-a100-partitions.sh oct23 <USW2A_OCT23_CB_ID> <USE2A_OCT23_CB_ID> --apply
+
+# 3. Verify all 4x p4d.24xlarge nodes (32x A100 GPUs), NVSwitch Fabric Manager, and /shared storage
+ssh -i ~/.ssh/sc26-key.pem ec2-user@<WEST_HEADNODE_PUBLIC_IP> "sudo bash ~/nersc-sc26/scripts/prewarm-p4d-reservation.sh oct23"
+
+# 4. After the Oct 23/24 test finishes, return to placeholder mode (MinCount: 0)
+bash scripts/configure-a100-partitions.sh placeholder --apply
+```
+
+#### B. Nov 15, 2026 SC26 Workshop Cutover (After 03:30 AM PST / 05:30 AM CST Chicago)
+```bash
+# 1. Verify all three Nov 15 Capacity Blocks are in State="active"
+aws ec2 describe-capacity-reservations --region us-west-2 --capacity-reservation-ids <USW2A_NOV15_CB_ID> <USW2C_NOV15_CB_ID>
+aws ec2 describe-capacity-reservations --region us-east-2 --capacity-reservation-ids <USE2A_NOV15_CB_ID>
+
+# 2. Configure nov15 mode (8x p4d in us-west-2a + 7x p4d in us-west-2c + 7x p4d in us-east-2a) and update both clusters
+bash scripts/configure-a100-partitions.sh nov15 <USW2A_NOV15_CB_ID> <USW2C_NOV15_CB_ID> <USE2A_NOV15_CB_ID> --apply
+
+# 3. Verify all 22x p4d.24xlarge nodes (176x A100 GPUs), NVSwitch Fabric Manager, and /shared storage
+ssh -i ~/.ssh/sc26-key.pem ec2-user@<WEST_HEADNODE_PUBLIC_IP> "sudo bash ~/nersc-sc26/scripts/prewarm-p4d-reservation.sh nov15"
+```
+

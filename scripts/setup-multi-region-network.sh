@@ -109,7 +109,20 @@ done
 aws ec2 create-route --region "${EAST_REGION}" --route-table-id "${EAST_RTB_ID}" --destination-cidr-block "${WEST_VPC_CIDR}" --vpc-peering-connection-id "${PEERING_ID}" >/dev/null 2>&1 || \
 aws ec2 replace-route --region "${EAST_REGION}" --route-table-id "${EAST_RTB_ID}" --destination-cidr-block "${WEST_VPC_CIDR}" --vpc-peering-connection-id "${PEERING_ID}" >/dev/null 2>&1 || true
 
-echo "=== 5. Populating Discovered Subnet IDs into config/*.yaml ==="
+echo "=== 5. Ensuring Free S3 & DynamoDB Gateway VPC Endpoints + Multi-NIC Subnet Settings ==="
+for svc in s3 dynamodb; do
+    aws ec2 create-vpc-endpoint --region "${WEST_REGION}" --vpc-id "${WEST_VPC_ID}" --vpc-endpoint-type Gateway \
+        --service-name "com.amazonaws.${WEST_REGION}.${svc}" --route-table-ids ${WEST_RTB_IDS} >/dev/null 2>&1 || true
+    aws ec2 create-vpc-endpoint --region "${EAST_REGION}" --vpc-id "${EAST_VPC_ID}" --vpc-endpoint-type Gateway \
+        --service-name "com.amazonaws.${EAST_REGION}.${svc}" --route-table-ids "${EAST_RTB_ID}" >/dev/null 2>&1 || true
+done
+# Disable subnet-level MapPublicIpOnLaunch so ParallelCluster's MultiNetworkInterfacesInstancesValidator
+# allows 4-NIC p4d.24xlarge (A100) queues (single-NIC g4dn.xlarge queues set AssignPublicIp: true explicitly)
+aws ec2 modify-subnet-attribute --region "${WEST_REGION}" --subnet-id "${USW2A_SUBNET_ID}" --no-map-public-ip-on-launch
+aws ec2 modify-subnet-attribute --region "${WEST_REGION}" --subnet-id "${USW2C_SUBNET_ID}" --no-map-public-ip-on-launch
+aws ec2 modify-subnet-attribute --region "${EAST_REGION}" --subnet-id "${EAST_SUBNET_ID}" --no-map-public-ip-on-launch
+
+echo "=== 6. Populating Discovered Subnet IDs into config/*.yaml ==="
 for cfg in "${SCRIPT_DIR}/config/sc26-test-gpu.yaml" "${SCRIPT_DIR}/config/sc26-east-gpu.yaml" "${SCRIPT_DIR}/config/sc26-test-cpu-quota5.yaml"; do
     if [ -f "${cfg}" ]; then
         sed -i.bak \
