@@ -1,8 +1,9 @@
 # SC26 AWS ParallelCluster Blueprint - Federated East Spoke Cluster (us-east-2a)
-# - HeadNode: m6i.2xlarge (8 vCPUs, 32 GiB RAM, 100 GB GP3 NVMe) in us-east-2a (10.2.1.0/24 peered with us-west-2)
+# - HeadNode: m6i.2xlarge (8 vCPUs, 32 GiB RAM, 1000 GB = 1 TB GP3 NVMe) in us-east-2a (10.2.1.0/24 peered with us-west-2)
 # - Compute Nodes (GPU-only, 0 CPU nodes):
 #   1. gpu (Default Federated Partition in us-east-2a)
 #   2. gpu-use2a (Pinned strictly to us-east-2a: <REPLACE_WITH_USE2A_SUBNET_ID>)
+#   3. a100-use2a (p4d.24xlarge in us-east-2a)
 
 Region: us-east-2
 Image:
@@ -16,7 +17,7 @@ HeadNode:
     KeyName: sc26-key
   LocalStorage:
     RootVolume:
-      Size: 100
+      Size: 1000
       VolumeType: gp3
       Iops: 3000
       Throughput: 250

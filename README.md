@@ -9,14 +9,19 @@ This repository provides a reproducible, automated deployment blueprint for the 
 
 ## Architecture Highlights
 
-- **Primary HeadNode (`sc26-west` in `us-west-2a`)**: `m6i.4xlarge` (**16 vCPUs, 64 GiB RAM**, `120 GB` GP3 NVMe SSD) sized to serve **100+ concurrent workshop users** via Open OnDemand Web Portal + SSH.
-- **Federated Spoke HeadNode (`sc26-east` in `us-east-2a`)**: `m6i.2xlarge` (**8 vCPUs, 32 GiB RAM**, `100 GB` GP3 NVMe SSD) peered over an AWS Inter-Region VPC Peering link (`172.31.0.0/16` $\leftrightarrow$ `10.2.0.0/16`).
-- **GPU-Only Compute Partitions Across 2 Regions & 3 Availability Zones**:
-  - `gpu-usw2a`: Pinned to **`us-west-2a`** (Oregon Zone A)
-  - `gpu-usw2c`: Pinned to **`us-west-2c`** (Oregon Zone C)
-  - `gpu-use2a`: Pinned to **`us-east-2a`** (Ohio Zone A)
-  - `gpu` *(Default Federated Queue)*: Spans all 3 Availability Zones across both regions (`us-west-2a`, `us-west-2c`, `us-east-2a`)
-- **Zero Static Passwords in Git**: By default, `setup/create-users.sh` generates **cryptographically random 12-character passwords** for `user1..user100` at deployment time and stores them only on the HeadNode in `/root/workshop-credentials.csv` (`chmod 600`).
+- **Primary HeadNode (`sc26-west` in `us-west-2a`)**: `m6i.4xlarge` (**16 vCPUs, 64 GiB RAM**, **`1,000 GB (1 TB)` GP3 NVMe SSD**) sized to serve **100+ concurrent workshop users** via Open OnDemand Web Portal + SSH without ever needing to resize `/home` or `/deploy`.
+- **Federated Spoke HeadNode (`sc26-east` in `us-east-2a`)**: `m6i.2xlarge` (**8 vCPUs, 32 GiB RAM**, **`1,000 GB (1 TB)` GP3 NVMe SSD**) peered over an AWS Inter-Region VPC Peering link (`172.31.0.0/16` $\leftrightarrow$ `10.2.0.0/16`).
+- **7 GPU-Only Compute Partitions Across 2 Regions & 3 Availability Zones**:
+  - **Tesla T4 Partitions (`g4dn.xlarge` — 3 Warm Static + 7 Dynamic GPUs for Everyday Testing & Overflow)**:
+    - `gpu-usw2a`: Pinned to **`us-west-2a`** (Oregon Zone A — `1` warm static + `1` dynamic T4)
+    - `gpu-usw2c`: Pinned to **`us-west-2c`** (Oregon Zone C — `1` warm static + `1` dynamic T4)
+    - `gpu-use2a`: Pinned to **`us-east-2a`** (Ohio Zone A — `1` warm static + `1` dynamic T4)
+    - `gpu` *(Default Federated Queue)*: Spans all 3 Availability Zones across both regions (`us-west-2a`, `us-west-2c`, `us-east-2a`)
+  - **NVIDIA A100 Partitions (`p4d.24xlarge` — 8 × A100 GPUs + 4 × 100 Gbps EFA per Node)**:
+    - `a100-usw2a`: Pinned to **`us-west-2a`** (`0..8` in placeholder mode; `2 × p4d.24xlarge` = 16 A100s on Oct 23; `8 × p4d.24xlarge` = 64 A100s on Nov 15)
+    - `a100-usw2c`: Pinned to **`us-west-2c`** (`0..7` in placeholder mode; `7 × p4d.24xlarge` = 56 A100s on Nov 15)
+    - `a100-use2a`: Pinned to **`us-east-2a`** (`0..7` in placeholder mode; `2 × p4d.24xlarge` = 16 A100s on Oct 23; `7 × p4d.24xlarge` = 56 A100s on Nov 15)
+- **Zero Static Passwords in Git**: By default, `setup/create-users.sh` generates **cryptographically random 12-character passwords** for `user0..user100` (101 users, UIDs `2000..2100`) at deployment time and stores them only on the HeadNode in `/root/workshop-credentials.csv` (`chmod 600`), plus dedicated per-user `$SCRATCH` directories at `/shared/users/user<N>` (`chmod 700`).
 
 ---
 
@@ -60,14 +65,15 @@ This repository provides a reproducible, automated deployment blueprint for the 
 
 ---
 
-### Step 3: Set Up SSH KeyPairs, Multi-Region VPC Peering & Subnets (Automated)
+### Step 3: Set Up SSH KeyPairs, Multi-Region VPC Peering, Gateway Endpoints & Subnets (Automated)
 
 Run [`scripts/setup-multi-region-network.sh`](scripts/setup-multi-region-network.sh). This single script:
 1. Creates the `sc26-key` EC2 SSH KeyPair in `us-west-2` (`~/.ssh/sc26-key.pem`, `chmod 400`) and imports the same public key into `us-east-2`.
 2. Discovers your `us-west-2a` and `us-west-2c` Subnet IDs in your `us-west-2` VPC (`172.31.0.0/16`).
-3. Creates a non-overlapping VPC (`10.2.0.0/16`) and public subnet (`10.2.1.0/24` in `us-east-2a`) in `us-east-2`.
+3. Creates a non-overlapping VPC (`10.2.0.0/16`) and subnet (`10.2.1.0/24` in `us-east-2a`) in `us-east-2`.
 4. Establishes an active **Inter-Region VPC Peering** connection and bidirectional route table entries between `us-west-2` and `us-east-2`.
-5. Automatically populates your discovered Subnet IDs into `config/sc26-test-gpu.yaml` and `config/sc26-east-gpu.yaml`.
+5. Creates **free S3 & DynamoDB Gateway VPC Endpoints** in both regions and configures subnet attributes for 4-NIC `p4d.24xlarge` (`AssignPublicIp: false`) compatibility.
+6. Automatically populates your discovered Subnet IDs into `config/sc26-test-gpu.yaml` and `config/sc26-east-gpu.yaml`.
 
 ```bash
 bash scripts/setup-multi-region-network.sh
@@ -77,18 +83,18 @@ bash scripts/setup-multi-region-network.sh
 
 ### Step 4: Deploy Primary (`sc26-west`) and Spoke (`sc26-east`) GPU Clusters
 
-Launch both AWS ParallelCluster stacks in parallel:
+Launch both AWS ParallelCluster stacks in parallel (by default, the 3 `a100-*` partitions start in `placeholder` mode at `MinCount: 0` so deployment succeeds immediately in any AWS account):
 
 ```bash
 source .venv/bin/activate
 
-# 1. Primary West Cluster (us-west-2a & us-west-2c, m6i.4xlarge HeadNode + g4dn.xlarge T4 GPUs)
+# 1. Primary West Cluster (us-west-2a & us-west-2c, m6i.4xlarge HeadNode + T4 & A100 partitions)
 pcluster create-cluster \
   --cluster-name sc26-west \
   --cluster-configuration config/sc26-test-gpu.yaml \
   --region us-west-2
 
-# 2. Federated East Spoke Cluster (us-east-2a, m6i.2xlarge HeadNode + g4dn.xlarge T4 GPUs)
+# 2. Federated East Spoke Cluster (us-east-2a, m6i.2xlarge HeadNode + T4 & A100 partitions)
 pcluster create-cluster \
   --cluster-name sc26-east \
   --cluster-configuration config/sc26-east-gpu.yaml \
@@ -135,7 +141,7 @@ echo "sc26-east: Public=${EAST_PUB_IP}, Private=${EAST_PRIV_IP}"
    This script automatically:
    - Opens HTTP/HTTPS (80/443) for Open OnDemand and cross-region VPC traffic (`172.31.0.0/16` $\leftrightarrow$ `10.2.0.0/16`).
    - Synchronizes `/etc/munge/munge.key` and `/shared/etc/users.list` across both regions.
-   - Mounts `/home/user1..user100` across regions over NFSv4.1 (`/federated_home`).
+   - Mounts `/home/user0..user100` across regions over NFSv4.1 (`/federated_home`).
    - Configures `slurmdbd` + MariaDB and joins `sc26-west` and `sc26-east` into `sc26-fed`.
 
 ---
@@ -145,7 +151,7 @@ echo "sc26-east: Public=${EAST_PUB_IP}, Private=${EAST_PRIV_IP}"
 Because this repository is public, **no static passwords are stored in the repository**. [`setup/create-users.sh`](setup/create-users.sh) supports two secure modes:
 
 1. **Mode A (Default — Unique Random Passwords Per User)**:
-   - Generates a unique, cryptographically random 12-character alphanumeric password for each user (`user1`..`user100`) using `openssl rand`.
+   - Generates a unique, cryptographically random 12-character alphanumeric password for each user (`user0`..`user100`) using `openssl rand`.
    - Saves the master credential list on the Primary HeadNode at `/root/workshop-credentials.csv` (`chmod 600`).
    - Download the credential sheet to your laptop to distribute to attendees:
      ```bash
@@ -166,8 +172,8 @@ Because this repository is public, **no static passwords are stored in the repos
 ### Step 7: Validate Federated GPU Execution & Open OnDemand
 
 1. **Access Open OnDemand Web Portal**:
-   - Open `http://${WEST_PUB_IP}` in your browser and log in with `user1` and the password from `workshop-credentials.csv`.
-   - Launch an interactive **Shell** or **JupyterLab + PyTorch GPU** session.
+   - Open `https://${WEST_PUB_IP}` in your browser and log in with `user0` or `user1` and the password from `workshop-credentials.csv`.
+   - Launch an interactive **Shell** or **JupyterLab + PyTorch GPU** session (all 7 partitions — `gpu`, `gpu-usw2a`, `gpu-usw2c`, `gpu-use2a`, `a100-usw2a`, `a100-usw2c`, `a100-use2a` — are available in the Slurm Partition dropdown).
 
 2. **Submit PyTorch CUDA GPU Jobs Across All 3 Region-Zones (`us-west-2a`, `us-west-2c`, `us-east-2a`)**:
    ```bash
@@ -182,12 +188,41 @@ Because this repository is public, **no static passwords are stored in the repos
 
 ---
 
-### Step 8: Production Cutover (`p4d.24xlarge` A100 GPUs on Nov 15) & Teardown
+### Step 8: Capacity Block Cutover (`p4d.24xlarge` A100 GPUs on Oct 23 & Nov 15) & Teardown
 
-- **Production Cutover (`p4d.24xlarge` Capacity Blocks)**:
-  Edit [`config/sc26-workshop-prod.yaml`](config/sc26-workshop-prod.yaml) to insert NERSC's `CapacityReservationId` (`cr-xxxxxxxx`) values for `us-west-2a`, `us-west-2c`, and `us-east-2a`, and run [`scripts/prewarm-p4d-reservation.sh`](scripts/prewarm-p4d-reservation.sh) on the morning of the workshop.
-- **Teardown (Stop All Billing After Workshop)**:
-  ```bash
-  pcluster delete-cluster --cluster-name sc26-west --region us-west-2
-  pcluster delete-cluster --cluster-name sc26-east --region us-east-2
-  ```
+Use [`scripts/configure-a100-partitions.sh`](scripts/configure-a100-partitions.sh) to switch the 3 `a100-*` partitions (`a100-usw2a`, `a100-usw2c`, `a100-use2a`) between **`placeholder` mode** (`MinCount: 0`), **`oct23` dress-rehearsal mode** (2 AZs: `4 × p4d.24xlarge` = 32 A100 GPUs), and **`nov15` SC26 workshop mode** (3 AZs: `22 × p4d.24xlarge` = 176 A100 GPUs) without interrupting the running T4 GPUs:
+
+1. **Oct 23, 2026 Dress Rehearsal Cutover (`04:30 AM PDT` = `06:30 AM CDT` Chicago = `11:30 UTC`)**:
+   ```bash
+   # Activate 2x p4d.24xlarge in us-west-2a + 2x p4d.24xlarge in us-east-2a (32x A100 GPUs total)
+   bash scripts/configure-a100-partitions.sh oct23 <USW2A_OCT23_CB_ID> <USE2A_OCT23_CB_ID> --apply
+
+   # Re-apply Slurm federation & Open OnDemand config on sc26-west
+   bash scripts/setup-slurm-federation.sh "${WEST_PUB_IP}" "${WEST_PRIV_IP}" "${EAST_PUB_IP}" "${EAST_PRIV_IP}"
+   ssh -i ~/.ssh/sc26-key.pem ec2-user@${WEST_PUB_IP} "sudo bash ~/nersc-sc26/setup/configure-ondemand-cluster.sh"
+
+   # Verify all 4x p4d.24xlarge nodes (32x A100 GPUs) + NVSwitch Fabric Manager
+   ssh -i ~/.ssh/sc26-key.pem ec2-user@${WEST_PUB_IP} "sudo bash ~/nersc-sc26/scripts/prewarm-p4d-reservation.sh oct23"
+
+   # After the Oct 23 test finishes, return to placeholder mode (MinCount: 0)
+   bash scripts/configure-a100-partitions.sh placeholder --apply
+   ```
+
+2. **Nov 15, 2026 SC26 Workshop Production Cutover (`03:30 AM PST` = `05:30 AM CST` Chicago = `11:30 UTC`)**:
+   ```bash
+   # Activate 8x p4d in us-west-2a + 7x p4d in us-west-2c + 7x p4d in us-east-2a (22x p4d.24xlarge = 176x A100 GPUs)
+   bash scripts/configure-a100-partitions.sh nov15 <USW2A_NOV15_CB_ID> <USW2C_NOV15_CB_ID> <USE2A_NOV15_CB_ID> --apply
+
+   # Re-apply Slurm federation & Open OnDemand config on sc26-west
+   bash scripts/setup-slurm-federation.sh "${WEST_PUB_IP}" "${WEST_PRIV_IP}" "${EAST_PUB_IP}" "${EAST_PRIV_IP}"
+   ssh -i ~/.ssh/sc26-key.pem ec2-user@${WEST_PUB_IP} "sudo bash ~/nersc-sc26/setup/configure-ondemand-cluster.sh"
+
+   # Verify all 22x p4d.24xlarge nodes (176x A100 GPUs) + NVSwitch Fabric Manager
+   ssh -i ~/.ssh/sc26-key.pem ec2-user@${WEST_PUB_IP} "sudo bash ~/nersc-sc26/scripts/prewarm-p4d-reservation.sh nov15"
+   ```
+
+3. **Teardown (Stop All Billing After Workshop)**:
+   ```bash
+   pcluster delete-cluster --cluster-name sc26-west --region us-west-2
+   pcluster delete-cluster --cluster-name sc26-east --region us-east-2
+   ```

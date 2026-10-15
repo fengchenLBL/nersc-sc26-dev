@@ -1,5 +1,5 @@
 # SC26 AWS ParallelCluster Blueprint - Nov 15th Production Cluster (us-west-2a & us-west-2c)
-# - HeadNode: m6i.4xlarge (16 vCPUs, 64 GiB RAM, 120 GB GP3 NVMe) for 100+ concurrent Open OnDemand & SSH users
+# - HeadNode: m6i.4xlarge (16 vCPUs, 64 GiB RAM, 1000 GB = 1 TB GP3 NVMe) for 100+ concurrent Open OnDemand & SSH users
 # - Compute Nodes (GPU-only, p4d.24xlarge = 8x NVIDIA A100 GPUs + 4x 100Gbps EFA):
 #   1. gpu-usw2a (Pinned to us-west-2a ODCR: <REPLACE_WITH_USW2A_ODCR_ID>)
 #   2. gpu-usw2c (Pinned to us-west-2c ODCR: <REPLACE_WITH_USW2C_ODCR_ID>)
@@ -16,7 +16,7 @@ HeadNode:
     KeyName: <REPLACE_WITH_KEYPAIR_NAME>
   LocalStorage:
     RootVolume:
-      Size: 120
+      Size: 1000
       VolumeType: gp3
       Iops: 3000
       Throughput: 250
